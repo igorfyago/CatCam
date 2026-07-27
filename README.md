@@ -1,4 +1,14 @@
+<p align="center">
+  <img src="assets/logo.svg" width="180" alt="CatCam logo: an orange cat whose right eye is a camera lens">
+</p>
+
 # CatCam
+
+![Release](https://img.shields.io/github/v/release/igorfyago/CatCam)
+![License](https://img.shields.io/badge/license-GPL--2.0-blue)
+![Windows](https://img.shields.io/badge/Windows%2011-22H2%2B-0078D6)
+![Android](https://img.shields.io/badge/Android-8%2B-3DDC84)
+![Cat](https://img.shields.io/badge/cat-approved-brightgreen)
 
 Turn a spare Android tablet or phone into a real Windows webcam and a
 professional-grade cat surveillance instrument. It also does video calls

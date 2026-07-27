@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>CatCam: a cat whose right eye is a camera lens</title>
+  <!-- ears -->
+  <g stroke="#22223B" stroke-width="14" stroke-linejoin="round">
+    <polygon points="80,200 120,42 225,118" fill="#F4A259"/>
+    <polygon points="432,200 392,42 287,118" fill="#F4A259"/>
+  </g>
+  <polygon points="112,168 132,78 196,124" fill="#F28482"/>
+  <polygon points="400,168 380,78 316,124" fill="#F28482"/>
+  <!-- head -->
+  <ellipse cx="256" cy="280" rx="190" ry="184" fill="#F4A259" stroke="#22223B" stroke-width="14"/>
+  <!-- muzzle + blush -->
+  <ellipse cx="256" cy="360" rx="90" ry="60" fill="#FFE8C8"/>
+  <ellipse cx="126" cy="322" rx="30" ry="22" fill="#FAB4A0"/>
+  <ellipse cx="386" cy="322" rx="30" ry="22" fill="#FAB4A0"/>
+  <!-- left eye -->
+  <circle cx="181" cy="245" r="45" fill="#FFFFFF" stroke="#22223B" stroke-width="10"/>
+  <ellipse cx="184" cy="247" rx="21" ry="34" fill="#22223B"/>
+  <ellipse cx="178" cy="231" rx="8" ry="9" fill="#FFFFFF"/>
+  <!-- right eye: the lens -->
+  <circle cx="336" cy="250" r="54" fill="#22223B"/>
+  <circle cx="336" cy="250" r="42" fill="#4A4E69"/>
+  <circle cx="336" cy="250" r="30" fill="#22223B"/>
+  <ellipse cx="328" cy="239" rx="12" ry="11" fill="#8D99AE"/>
+  <circle cx="349" cy="267" r="5" fill="#C8CDD7"/>
+  <!-- nose + mouth -->
+  <polygon points="240,336 272,336 256,356" fill="#F28482"/>
+  <g fill="none" stroke="#22223B" stroke-width="10" stroke-linecap="round">
+    <path d="M255 364 A 15 18 0 0 1 227 364"/>
+    <path d="M285 364 A 15 18 0 0 1 257 364"/>
+  </g>
+  <!-- whiskers -->
+  <g stroke="#22223B" stroke-width="10" stroke-linecap="round">
+    <line x1="120" y1="300" x2="30"  y2="288"/>
+    <line x1="120" y1="322" x2="30"  y2="322"/>
+    <line x1="120" y1="344" x2="30"  y2="356"/>
+    <line x1="392" y1="300" x2="482" y2="288"/>
+    <line x1="392" y1="322" x2="482" y2="322"/>
+    <line x1="392" y1="344" x2="482" y2="356"/>
+  </g>
+</svg>
