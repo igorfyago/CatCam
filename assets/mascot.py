@@ -192,10 +192,24 @@ for a, b in [((198, 198), (155, 192)), ((199, 210), (157, 216)),
 
 # collar band + camera-lens tag (the one cool accent, narrative: CatCam)
 arcw(250, 240, 58, 34, 30, 150, INK, 14)
-circle(251, 286, 22, INK)
-circle(251, 286, 16, BLUE)
-circle(251, 286, 7, INK)
-circle(245.5, 280.5, 4, (255, 255, 255, 255))
+
+# tablet hugged against the chest by the resting paw: the product itself.
+# Rounded slab, inset screen, punch-hole camera dot (the one blue accent).
+def rrect(cx, cy, w, h, deg, rad, col):
+    base = [(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)]
+    pts = [rotp((cx + x, cy + y), (cx, cy), deg) for x, y in base]
+    polyg(pts, col, grow=rad)
+
+TCX, TCY, TW, TH, TDEG = 202, 352, 88, 122, -10
+SCREEN = (94, 80, 120, 255)
+rrect(TCX, TCY, TW, TH, TDEG, 14, (62, 52, 82, 255))
+rrect(TCX, TCY, TW - 14, TH - 14, TDEG, 9, SCREEN)
+cam = rotp((TCX, TCY - TH / 2 + 21), (TCX, TCY), TDEG)
+circle(cam[0], cam[1], 7, BLUE)
+circle(cam[0] - 2.2, cam[1] - 2.2, 2.4, (255, 255, 255, 255))
+# holding paw over the tablet's lower corner
+hp = rotp((TCX + TW / 2 - 8, TCY + TH / 2 - 6), (TCX, TCY), TDEG)
+circle(hp[0], hp[1], 21, FUR)
 
 # raised arm: IN FRONT of the torso, springing from the shoulder
 arm_group(FUR, 0)
@@ -209,7 +223,7 @@ tail_group(DEEP, 0)              # tail as the deeper tone = layered depth
 # ----- output -----
 img.save(r"./neko_2026_2048.png".replace("/", chr(92)))
 final = img.resize((CANVAS, CANVAS), Image.LANCZOS)
-out = r".\neko_2026.png"
+out = r"C:\Users\b4rru\AppData\Local\Temp\claude\C--Users-b4rru\fd896fc1-c85f-474b-9813-60469bb4f598\scratchpad\neko_2026.png"
 final.save(out)
 
 # debug sheet: render + silhouette + 16px readback
