@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" width="180" alt="CatCam logo: an orange cat whose right eye is a camera lens">
+  <img src="assets/logo512.png" width="200" alt="CatCam mascot: a chubby orange cat waving one paw, wearing a camera-lens collar tag">
 </p>
 
 # CatCam
