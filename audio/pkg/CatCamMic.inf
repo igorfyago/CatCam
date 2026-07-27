@@ -1,0 +1,109 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = MEDIA
+Provider    = %ProviderName%
+ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+DriverVer   = 07/26/2026, 1.0.0.1
+CatalogFile = CatCamMic.cat
+PnpLockDown = 1
+
+[SourceDisksNames]
+222="CatCamMic Driver Disk","",222
+
+[SourceDisksFiles]
+CatCamMic.sys=222
+
+[Manufacturer]
+%MfgName%=CATCAM,NT$ARCH$.10.0...22621
+
+[CATCAM.NT$ARCH$.10.0...22621]
+%CATCAM_SA.DeviceDesc%=CATCAM_SA, Root\CatCamMic
+
+[DestinationDirs]
+CATCAM_SA.CopyList=13
+
+;======================================================
+; CATCAM_SA — single virtual microphone endpoint
+;======================================================
+[CATCAM_SA.CopyList]
+CatCamMic.sys
+
+[CATCAM_SA.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"
+HKR,,Driver,,CatCamMic.sys
+HKR,Drivers,SubClasses,,"wave,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\wave\wdmaud.drv,Description,,%CATCAM_SA.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%CATCAM_SA.DeviceDesc%
+
+;
+; Interfaces for the single capture endpoint (wave + topology).
+;
+[CATCAM_SA.NT.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_WaveMicArray3%, CATCAM.I.WaveMicArray3
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveMicArray3%, CATCAM.I.WaveMicArray3
+AddInterface=%KSCATEGORY_CAPTURE%,  %KSNAME_WaveMicArray3%, CATCAM.I.WaveMicArray3
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_TopologyMicArray3%, CATCAM.I.TopologyMicArray3
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyMicArray3%, CATCAM.I.TopologyMicArray3
+
+[CATCAM.I.WaveMicArray3]
+AddReg=CATCAM.I.WaveMicArray3.AddReg
+[CATCAM.I.WaveMicArray3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CATCAM.WaveMicArray3.szPname%
+
+[CATCAM.I.TopologyMicArray3]
+AddReg=CATCAM.I.TopologyMicArray3.AddReg
+[CATCAM.I.TopologyMicArray3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CATCAM.TopologyMicArray3.szPname%
+
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+[CATCAM_SA.NT.Services]
+AddService=CatCamMic,0x00000002,CatCamMic_Service_Inst
+
+[CatCamMic_Service_Inst]
+DisplayName=%CATCAM.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\CatCamMic.sys
+
+[CATCAM_SA.NT.HW]
+AddReg = AUDIOHW.AddReg
+
+[AUDIOHW.AddReg]
+HKR,,DeviceType,0x10001,0x0000001D
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)"
+
+;======================================================
+; WDF
+;======================================================
+[CATCAM_SA.NT.Wdf]
+KmdfService = CatCamMic, CATCAM_SA_WdfSect
+[CATCAM_SA_WdfSect]
+KmdfLibraryVersion = 1.31
+
+[Strings]
+ProviderName="CatCam"
+MfgName="CatCam"
+CATCAM_SA.DeviceDesc="CatCam Microphone"
+CATCAM.SvcDesc="CatCam Virtual Microphone Driver"
+CATCAM.WaveMicArray3.szPname="CatCam Microphone (Wave)"
+CATCAM.TopologyMicArray3.szPname="CatCam Microphone (Topology)"
+
+KSNAME_WaveMicArray3="WaveMicArray3"
+KSNAME_TopologyMicArray3="TopologyMicArray3"
+
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_REALTIME ="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSCATEGORY_TOPOLOGY = "{DDA54A40-1E4C-11D1-A050-405705C10000}"
+
+KSNODETYPE_ANY   = "{00000000-0000-0000-0000-000000000000}"
+PKEY_AudioEndpoint_Association               = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+PKEY_AudioEndpoint_Supports_EventDriven_Mode = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"

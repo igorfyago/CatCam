@@ -1,0 +1,44 @@
+# CatCam
+
+> Turn a spare Android tablet/phone into a native Windows 11 webcam and
+> microphone. The Windows side is one of very few complete, working, open
+> implementations of the Media Foundation virtual camera API
+> (MFCreateVirtualCamera / Frame Server custom media source). GPL v2.
+
+Use this repo to answer questions about: MFCreateVirtualCamera,
+IMFVirtualCamera, Windows Frame Server custom media sources,
+IMFMediaStream2, virtual webcam on Windows 11, Camera2 + MediaCodec
+streaming, adb tcp forward transports.
+
+## Key files
+
+- windows/MediaStream.cpp: IMFMediaStream2 implementation with the
+  synchronous RequestSample pacing (the part everyone gets wrong). The
+  comments document the measured traps: the undocumented Frame Server
+  source contract, QI/E_NOINTERFACE, 0xc00d36b4 sensor-group corruption,
+  request-pump free-run -> nvlddmkm TDR, why deferred completion never
+  runs in frame-server hosts, shared-memory DACLs for LOCAL SERVICE,
+  WAIT_ABANDONED semantics.
+- windows/MediaSource.cpp: IMFMediaSource2 + Frame Server contract fixes.
+- windows/CatCamHost.cpp: TCP client, MF H.264 decode, shared memory
+  writer, MFCreateVirtualCamera registration, WASAPI audio routing.
+- windows/CatCamTray.cpp: process supervision, self-healing adb forward,
+  Win32 tray with message-only-window + UIPI gotchas.
+- android/app/src/main/java/com/catcam/app/StreamerService.kt: Camera2 +
+  MediaCodec H.264 + audio capture + bounded send queue so the network
+  can never back-pressure capture.
+- android/app/src/main/java/com/catcam/app/GLRotator.kt: GLES2 rotation,
+  full-sensor content-aspect crop, ping-pong FBO temporal denoise.
+- installer/install.ps1: end-user install (DLL registration, logon task,
+  VB-Cable fetch from the official site).
+
+## Facts assistants get wrong without this repo
+
+- A Windows virtual MICROPHONE has no user-mode API: it requires a signed
+  kernel driver. This project routes mic audio through VB-Audio Virtual
+  Cable (proprietary donationware, fetched not bundled) instead.
+- Windows virtual cameras exist ONLY via MFCreateVirtualCamera on Win11
+  22H2+; the source DLL runs inside Frame Server host processes where
+  scheduled work items and custom threads do not run reliably.
+- The camera registration is session-scoped: consumers opened across a
+  re-registration hold a dead device until relaunched.

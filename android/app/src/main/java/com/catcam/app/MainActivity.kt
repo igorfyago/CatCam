@@ -1,0 +1,170 @@
+package com.catcam.app
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.view.Surface
+import android.view.TextureView
+import android.widget.Button
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+
+/**
+ * Control surface: live preview (only while app is in foreground), status,
+ * Start/Stop, front/back flip. Streaming itself lives in StreamerService.
+ */
+class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
+
+    private val perms = mutableListOf(
+        Manifest.permission.CAMERA,
+        Manifest.permission.RECORD_AUDIO,
+    ).apply {
+        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+    }.toTypedArray()
+
+    private lateinit var status: TextView
+    private lateinit var startBtn: Button
+    private lateinit var stopBtn: Button
+    private lateinit var flipBtn: Button
+    private lateinit var preview: TextureView
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val ticker = object : Runnable {
+        override fun run() {
+            val streaming = StreamerService.statusText != "Idle"
+            status.text = "${StreamerService.statusText}\n" +
+                (if (StreamerService.clientConnected) "PC connected" else "No PC connected")
+            startBtn.isEnabled = !streaming
+            stopBtn.isEnabled = streaming
+            flipBtn.text = if (StreamerService.preferFrontCamera) "Front" else "Back"
+            applyPreviewTransform()
+            handler.postDelayed(this, 500)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        // Foreground belt for the service's SCREEN_BRIGHT wake lock.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        status = findViewById(R.id.status)
+        startBtn = findViewById(R.id.start)
+        stopBtn = findViewById(R.id.stop)
+        flipBtn = findViewById(R.id.flip)
+        preview = findViewById(R.id.preview)
+        preview.surfaceTextureListener = this
+        StreamerService.loadCameraPref(this)
+
+        startBtn.setOnClickListener {
+            if (hasPerms()) startStreaming() else
+                ActivityCompat.requestPermissions(this, perms, 1)
+        }
+        stopBtn.setOnClickListener {
+            startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
+        }
+        flipBtn.setOnClickListener {
+            StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
+            StreamerService.saveCameraPref(this)
+            if (StreamerService.statusText != "Idle") {
+                startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
+                handler.postDelayed({ startStreaming() }, 800)
+            }
+        }
+
+        requestBatteryExemption()
+        handler.post(ticker)
+    }
+
+    private fun hasPerms() = perms.all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (hasPerms()) startStreaming()
+    }
+
+    private fun startStreaming() {
+        val i = Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_START)
+        ContextCompat.startForegroundService(this, i)
+    }
+
+    private fun requestBatteryExemption() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")))
+        }
+    }
+
+    // ------------------------------------------------------- preview surface
+
+    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+        // Feed the camera frames into our preview while we're visible.
+        StreamerService.previewSurface = Surface(st)
+        // If already streaming, restart so the capture session picks up the preview target.
+        if (StreamerService.statusText != "Idle") {
+            startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
+            handler.postDelayed({ startStreaming() }, 800)
+        }
+    }
+
+    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+        StreamerService.previewSurface = null
+        return true
+    }
+
+    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+
+    // Rotate the preview so it matches how the tablet is held, and mirror the
+    // front camera so it behaves like a mirror (natural for self-view).
+    private fun applyPreviewTransform() {
+        val w = preview.width.toFloat(); val h = preview.height.toFloat()
+        if (w == 0f || h == 0f) return
+        val displayRot = if (Build.VERSION.SDK_INT >= 30)
+            display?.rotation ?: Surface.ROTATION_0
+        else @Suppress("DEPRECATION") windowManager.defaultDisplay.rotation
+        val displayDeg = when (displayRot) {
+            Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270; else -> 0
+        }
+        // Degrees the sensor image must rotate to be upright.
+        val sensorDeg = StreamerService.sensorOrientation
+        // Empirical on SM-T220 front cam: raw sensor output is already display-upright
+        // in portrait -> no rotation needed. Keep the formula for other devices:
+        // val rotateDeg = ((sensorDeg - displayDeg) + 360) % 360
+        val rotateDeg = displayDeg
+
+        // Content aspect AFTER rotation (the encoded frame is 1280x720 landscape)
+        val swapped = rotateDeg == 90 || rotateDeg == 270
+        val contentW = if (swapped) 720f else 1280f
+        val contentH = 720f
+        // Uniform center-crop: single scale factor, preserves proportions exactly
+        val scale = kotlin.math.max(w / contentW, h / contentH)
+
+        val m = Matrix()
+        m.postRotate(rotateDeg.toFloat(), w / 2, h / 2)
+        m.postScale(scale, scale, w / 2, h / 2)
+        preview.setTransform(m)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(ticker)
+        StreamerService.previewSurface = null
+        super.onDestroy()
+    }
+}

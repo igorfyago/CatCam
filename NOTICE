@@ -1,0 +1,29 @@
+CatCam · notices
+
+License: GNU GPL v2 (see LICENSE).
+
+Derivation
+----------
+The Windows virtual-camera media source (windows/DllMain.cpp,
+MediaSource.cpp/.h, MediaStream.cpp/.h, FrameServer.cpp/.h, Activator.h,
+Logger.h, CatCamSource.def) and the initial shape of the Windows host
+began as a fork of BestCam, the open-source reference implementation of
+the Windows 11 Media Foundation virtual camera API
+(MFCreateVirtualCamera), licensed under GPL v2.
+
+The files were substantially modified for CatCam during 2026-07
+(H.264/PCM TCP mux transport instead of MJPEG/HTTP, Media Foundation
+decoder, Frame Server contract fixes, inline sample pacing, shared-memory
+protocol changes, portrait/rotation pipeline, audio feed). Per GPL
+section 2a, this file records that the derived files were changed and
+when; per-file change headers are still to be added.
+
+Third-party components (not included in this repository)
+--------------------------------------------------------
+- VB-Audio Virtual Cable (vb-audio.com): proprietary donationware used as
+  the microphone endpoint. NOT bundled, NOT redistributed; the installer
+  downloads it from the official site. Redistribution would require a
+  commercial license from VB-Audio.
+- Android Debug Bridge (adb): part of the Android SDK platform-tools,
+  expected to be installed separately.
+- The Android app depends on AndroidX/Jetpack libraries fetched by Gradle.
