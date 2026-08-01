@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand cream from assets/mascot.py; the launcher icon background. -->
+    <color name="ic_launcher_bg">#FFF3E0</color>
+</resources>
