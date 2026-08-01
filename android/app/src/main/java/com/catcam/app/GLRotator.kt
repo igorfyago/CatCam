@@ -128,6 +128,13 @@ class GLRotator(
     private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var eglConfig: EGLConfig? = null
 
+    // Optional second output: the activity's preview TextureView. It gets the
+    // EXACT frame the encoder gets (rotation, crop, denoise, zoom), letterboxed,
+    // so the tablet preview shows what the PC sees instead of a separate HAL
+    // feed with its own geometry. Attach/detach any time; a preview failure
+    // only ever drops the preview, never the encoder path.
+    private var previewEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+
     private var program = 0
     private var oesTextureId = 0
     private var aPositionLoc = 0
@@ -256,6 +263,34 @@ class GLRotator(
     }
 
     /**
+     * Attach (or detach with null) a live mirror of the encoder output — the
+     * activity's preview surface. Safe from any thread: this only creates or
+     * destroys the EGL window surface, and never touches EGL current-ness,
+     * which stays owned by the render thread (eglMakeCurrent binds the context
+     * to the calling thread; doing it here would break renderFrame).
+     */
+    @Synchronized
+    fun setPreviewSurface(surface: Surface?) {
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY) return
+        if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
+            previewEglSurface = EGL14.EGL_NO_SURFACE
+        }
+        if (surface != null && surface.isValid) {
+            try {
+                val s = EGL14.eglCreateWindowSurface(
+                    eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+                if (s != null && s != EGL14.EGL_NO_SURFACE) previewEglSurface = s
+                else Log.w(TAG, "preview eglCreateWindowSurface failed: 0x" +
+                    Integer.toHexString(EGL14.eglGetError()))
+            } catch (e: Exception) {
+                Log.w(TAG, "preview attach failed: ${e.message}")
+            }
+        }
+        Log.i(TAG, "preview surface ${if (previewEglSurface != EGL14.EGL_NO_SURFACE) "attached" else "detached"}")
+    }
+
+    /**
      * Call when a new camera frame is available (from OnFrameAvailableListener).
      * Pulls the latest frame from the SurfaceTexture and draws one frame to the
      * encoder surface.
@@ -279,6 +314,9 @@ class GLRotator(
 
         GLES20.glViewport(0, 0, outWidth, outHeight)
 
+        // Which texture holds the finished output frame (for the preview
+        // mirror). -1 = direct path, re-sample the OES texture instead.
+        var previewTex = -1
         if (denoiseOk) {
             // Pass 1: blend the camera frame over the accumulator (ping-pong).
             val write = accumWrite
@@ -311,6 +349,7 @@ class GLRotator(
             GLES20.glUniformMatrix4fv(cUTexMatrix, 1, false, identityMatrix, 0)
             drawQuad(cAPosition, cATexCoord)
 
+            previewTex = accumTex[write]
             accumWrite = read
             accumValid = true
         } else {
@@ -328,6 +367,59 @@ class GLRotator(
         // encoder sees monotonic presentation times.
         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, inputSurfaceTexture.timestamp)
         EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+
+        // Encoder frame is on its way; now mirror it to the preview, if attached.
+        drawPreview(previewTex)
+    }
+
+    // Draw the finished output frame letterboxed into the preview surface.
+    // srcTex >= 0: the denoise accumulator that was just copied to the encoder.
+    // srcTex < 0: direct path, re-draw the OES texture with the same texMatrix
+    // (updateTexImage content persists until the next update, so this is the
+    // same frame the encoder just received).
+    private fun drawPreview(srcTex: Int) {
+        val ps = previewEglSurface
+        if (ps == EGL14.EGL_NO_SURFACE) return
+        try {
+            if (!EGL14.eglMakeCurrent(eglDisplay, ps, ps, eglContext))
+                throw RuntimeException("makeCurrent 0x" + Integer.toHexString(EGL14.eglGetError()))
+            // Query size per frame: the TextureView can resize under us.
+            val w = IntArray(1); val h = IntArray(1)
+            EGL14.eglQuerySurface(eglDisplay, ps, EGL14.EGL_WIDTH, w, 0)
+            EGL14.eglQuerySurface(eglDisplay, ps, EGL14.EGL_HEIGHT, h, 0)
+            if (w[0] <= 0 || h[0] <= 0) return
+            // Letterbox (aspect-fit, like the tray preview): the user must see
+            // the WHOLE frame the PC gets, so never crop here.
+            val scale = minOf(w[0].toFloat() / outWidth, h[0].toFloat() / outHeight)
+            val vw = (outWidth * scale).toInt().coerceAtLeast(1)
+            val vh = (outHeight * scale).toInt().coerceAtLeast(1)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glViewport((w[0] - vw) / 2, (h[0] - vh) / 2, vw, vh)
+            if (srcTex >= 0) {
+                GLES20.glUseProgram(copyProgram)
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, srcTex)
+                GLES20.glUniform1i(cSTexture, 0)
+                GLES20.glUniformMatrix4fv(cUMVP, 1, false, identityMatrix, 0)
+                GLES20.glUniformMatrix4fv(cUTexMatrix, 1, false, identityMatrix, 0)
+                drawQuad(cAPosition, cATexCoord)
+            } else {
+                GLES20.glUseProgram(program)
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+                GLES20.glUniformMatrix4fv(uMVPMatrixLoc, 1, false, mvpMatrix, 0)
+                GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
+                drawQuad(aPositionLoc, aTextureCoordLoc)
+            }
+            EGL14.eglSwapBuffers(eglDisplay, ps)
+        } catch (e: Exception) {
+            // Preview surface died (activity teardown race, etc): drop the
+            // preview and keep streaming. Never let it touch the encoder path.
+            Log.w(TAG, "preview draw dropped: ${e.message}")
+            try { EGL14.eglDestroySurface(eglDisplay, ps) } catch (_: Exception) {}
+            previewEglSurface = EGL14.EGL_NO_SURFACE
+        }
     }
 
     @Synchronized
@@ -335,10 +427,12 @@ class GLRotator(
         inputSurfaceTexture.release()
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            if (previewEglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
             if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
             if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
             EGL14.eglTerminate(eglDisplay)
         }
+        previewEglSurface = EGL14.EGL_NO_SURFACE
         eglDisplay = EGL14.EGL_NO_DISPLAY
         eglContext = EGL14.EGL_NO_CONTEXT
         eglSurface = EGL14.EGL_NO_SURFACE

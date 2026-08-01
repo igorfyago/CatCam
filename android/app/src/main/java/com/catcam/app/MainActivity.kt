@@ -37,6 +37,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
     private lateinit var flipBtn: Button
+    private lateinit var zoomInBtn: Button
+    private lateinit var zoomOutBtn: Button
+    private lateinit var zoomLabel: TextView
     private lateinit var preview: TextureView
 
     private val handler = Handler(Looper.getMainLooper())
@@ -48,7 +51,14 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             startBtn.isEnabled = !streaming
             stopBtn.isEnabled = streaming
             flipBtn.text = if (StreamerService.preferFrontCamera) "Front" else "Back"
-            applyPreviewTransform()
+            updateZoomLabel()
+            if (StreamerService.glPreviewActive) {
+                // GL letterboxes the encoder frame into the view (the "what
+                // the PC sees" preview); the matrix must not fight it.
+                preview.setTransform(Matrix())
+            } else {
+                applyPreviewTransform()
+            }
             handler.postDelayed(this, 500)
         }
     }
@@ -62,9 +72,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         startBtn = findViewById(R.id.start)
         stopBtn = findViewById(R.id.stop)
         flipBtn = findViewById(R.id.flip)
+        zoomOutBtn = findViewById(R.id.zoom_out)
+        zoomInBtn = findViewById(R.id.zoom_in)
+        zoomLabel = findViewById(R.id.zoom_label)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
         StreamerService.loadCameraPref(this)
+        updateZoomLabel()
 
         startBtn.setOnClickListener {
             if (hasPerms()) startStreaming() else
@@ -76,11 +90,17 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         flipBtn.setOnClickListener {
             StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
             StreamerService.saveCameraPref(this)
+            // Each camera keeps its own zoom (calls vs cat duty want different
+            // framing): pull the new camera's saved value and limits.
+            StreamerService.loadCameraPref(this)
+            updateZoomLabel()
             if (StreamerService.statusText != "Idle") {
                 startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
                 handler.postDelayed({ startStreaming() }, 800)
             }
         }
+        zoomOutBtn.setOnClickListener { stepZoom(1f / StreamerService.ZOOM_STEP) }
+        zoomInBtn.setOnClickListener { stepZoom(StreamerService.ZOOM_STEP) }
 
         requestBatteryExemption()
         handler.post(ticker)
@@ -102,6 +122,17 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         ContextCompat.startForegroundService(this, i)
     }
 
+    // Zoom is applied at the camera HAL, so the stream to the PC and the
+    // preview change together; the value persists per camera.
+    private fun stepZoom(factor: Float) {
+        StreamerService.setZoom(this, StreamerService.zoomRatio * factor)
+        updateZoomLabel()
+    }
+
+    private fun updateZoomLabel() {
+        zoomLabel.text = String.format(java.util.Locale.US, "%.1f×", StreamerService.zoomRatio)
+    }
+
     private fun requestBatteryExemption() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
@@ -113,9 +144,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     // ------------------------------------------------------- preview surface
 
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-        // Feed the camera frames into our preview while we're visible.
-        StreamerService.previewSurface = Surface(st)
-        // If already streaming, restart so the capture session picks up the preview target.
+        // A live GL pipeline adopts the surface on the spot (no restart, no
+        // stream blip) and mirrors the encoder output into it.
+        if (StreamerService.attachPreview(Surface(st))) return
+        // Direct/landscape path: the preview is a HAL target, which can only
+        // join by rebuilding the capture session.
         if (StreamerService.statusText != "Idle") {
             startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
             handler.postDelayed({ startStreaming() }, 800)
@@ -123,7 +156,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-        StreamerService.previewSurface = null
+        // Must detach BEFORE the SurfaceTexture is released (returning true
+        // releases it); attachPreview(null) blocks until GL forgot the surface.
+        StreamerService.attachPreview(null)
         return true
     }
 
@@ -164,7 +199,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
-        StreamerService.previewSurface = null
+        StreamerService.attachPreview(null)
         super.onDestroy()
     }
 }

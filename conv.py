@@ -1,6 +1,6 @@
 
-from PIL import os
-import Image
+import os
+from PIL import Image
 w,h = 720,1280
 d = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frame.nv12'),'rb').read()
 y = d[:w*h]

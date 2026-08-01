@@ -22,6 +22,39 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 
+    <!-- Zoom row sits ABOVE the Start/Stop/Flip row on purpose: that row must
+         stay the last child (flush to the bottom) or camctl.bat's measured
+         tap coordinates go stale and the tray taps thin air. -->
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="8dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content">
+
+        <Button
+            android:id="@+id/zoom_out"
+            android:text="−"
+            android:layout_marginEnd="8dp"
+            android:layout_width="72dp"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/zoom_label"
+            android:text="1.0×"
+            android:textSize="18sp"
+            android:gravity="center"
+            android:layout_width="72dp"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/zoom_in"
+            android:text="+"
+            android:layout_marginStart="8dp"
+            android:layout_width="72dp"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
     <LinearLayout
         android:orientation="horizontal"
         android:gravity="center"

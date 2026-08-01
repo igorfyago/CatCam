@@ -87,10 +87,63 @@ class StreamerService : Service() {
         // tablet reboot); the in-memory flag alone resets to front.
         private const val PREFS = "catcam"
         private const val KEY_PREFER_FRONT = "prefer_front_camera"
+        private const val KEY_ZOOM_FRONT = "zoom_front"
+        private const val KEY_ZOOM_BACK = "zoom_back"
+
+        // Multiplicative per tap: even perceived steps across the whole range
+        // (1x to this HAL's 10x in ~10 taps). Additive steps feel huge near 1x
+        // and useless near max.
+        const val ZOOM_STEP = 1.25f
+
+        // Digital zoom, per camera (front = calls, back = cat duty; they want
+        // different framing). Applied at the HAL (CONTROL_ZOOM_RATIO): the
+        // sensor is cropped BEFORE the downscale to the output streams, so
+        // detail survives zooming far better than blowing up delivered frames,
+        // and every output (encoder AND preview) zooms in lockstep.
+        @Volatile var zoomRatio = 1f
+            private set
+        @Volatile var zoomMax = 1f
+            private set
 
         fun loadCameraPref(ctx: Context) {
             preferFrontCamera = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(KEY_PREFER_FRONT, true)
+            zoomMax = queryMaxZoom(ctx)
+            zoomRatio = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, 1f)
+                .coerceIn(1f, zoomMax)
+        }
+
+        // UI entry: clamp, persist for this camera, and push into the live
+        // capture session if one is running (applies within a frame or two,
+        // no restart, no stream blip — dims don't change, the PC never knows).
+        fun setZoom(ctx: Context, ratio: Float) {
+            zoomRatio = ratio.coerceIn(1f, zoomMax)
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, zoomRatio)
+                .apply()
+            instance?.pushZoomLive()
+        }
+
+        // Characteristics query only, no camera open. Both SM-T220 cameras
+        // report CONTROL_ZOOM_RATIO_RANGE [1.0, 10.0] (measured 2026-08-01).
+        private fun queryMaxZoom(ctx: Context): Float = try {
+            val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val facing = if (preferFrontCamera)
+                CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+            var max = 1f
+            for (id in mgr.cameraIdList) {
+                val ch = mgr.getCameraCharacteristics(id)
+                if (ch.get(CameraCharacteristics.LENS_FACING) != facing) continue
+                max = if (Build.VERSION.SDK_INT >= 30)
+                    ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.upper ?: 1f
+                else
+                    ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+                break
+            }
+            max
+        } catch (e: Exception) {
+            Log.w(TAG, "zoom caps: ${e.message}"); 1f
         }
 
         fun saveCameraPref(ctx: Context) {
@@ -107,6 +160,26 @@ class StreamerService : Service() {
         @Volatile var previewSurface: Surface? = null
         @Volatile var sensorOrientation: Int = 90
         @Volatile var usingFrontCamera: Boolean = false
+
+        // True while the GL pipeline mirrors the encoder output into the
+        // preview (the "what the PC sees" view): the activity must then leave
+        // its TextureView transform at identity and let the GL letterbox rule.
+        @Volatile var glPreviewActive = false
+            private set
+
+        @Volatile private var instance: StreamerService? = null
+
+        // The activity hands its TextureView surface here (null to detach).
+        // A live GL pipeline adopts it on the spot — no session rebuild, no
+        // stream blip — and returns true. False: surface is only parked in
+        // previewSurface for the next session build (idle, or direct path).
+        fun attachPreview(surface: Surface?): Boolean {
+            previewSurface = surface
+            val rot = instance?.glRotator ?: return false
+            rot.setPreviewSurface(surface)
+            glPreviewActive = surface != null
+            return true
+        }
     }
 
     private val running = AtomicBoolean(false)
@@ -128,6 +201,8 @@ class StreamerService : Service() {
     private var cameraHandler: Handler? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
+    private var reqBuilder: CaptureRequest.Builder? = null
+    private var activeArray: android.graphics.Rect? = null
     private var encoder: MediaCodec? = null
     @Volatile private var lastConfig: ByteArray? = null
     private var encWidth = VIDEO_WIDTH
@@ -160,6 +235,8 @@ class StreamerService : Service() {
         running.set(false)
         out = null
         sendQ.clear()
+        glPreviewActive = false
+        reqBuilder = null
         try { serverSocket?.close() } catch (_: Exception) {}
         try { captureSession?.close() } catch (_: Exception) {}
         try { cameraDevice?.close() } catch (_: Exception) {}
@@ -173,7 +250,43 @@ class StreamerService : Service() {
         statusText = "Idle"
     }
 
-    override fun onDestroy() { stopStreaming(); super.onDestroy() }
+    override fun onCreate() { super.onCreate(); instance = this }
+
+    override fun onDestroy() { stopStreaming(); instance = null; super.onDestroy() }
+
+    // -------------------------------------------------------------------- zoom
+
+    // HAL zoom. API 30+ has the first-class control; older devices get the
+    // same effect via a centered SCALER_CROP_REGION over the active array.
+    private fun applyZoomToRequest(req: CaptureRequest.Builder) {
+        val z = zoomRatio.coerceIn(1f, zoomMax)
+        if (Build.VERSION.SDK_INT >= 30) {
+            req.set(CaptureRequest.CONTROL_ZOOM_RATIO, z)
+        } else {
+            val arr = activeArray ?: return
+            val cw = (arr.width() / z).toInt()
+            val ch = (arr.height() / z).toInt()
+            val cx = arr.left + (arr.width() - cw) / 2
+            val cy = arr.top + (arr.height() - ch) / 2
+            req.set(CaptureRequest.SCALER_CROP_REGION,
+                android.graphics.Rect(cx, cy, cx + cw, cy + ch))
+        }
+    }
+
+    private fun pushZoomLive() {
+        val session = captureSession ?: return
+        val req = reqBuilder ?: return
+        cameraHandler?.post {
+            try {
+                applyZoomToRequest(req)
+                session.setRepeatingRequest(req.build(), null, cameraHandler)
+            } catch (e: Exception) {
+                // Session mid-teardown (stop/flip race): harmless, the next
+                // session build re-applies the persisted zoom anyway.
+                Log.w(TAG, "zoom apply: ${e.message}")
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- server
 
@@ -309,6 +422,7 @@ class StreamerService : Service() {
         val chars = mgr.getCameraCharacteristics(chosenId)
         sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         usingFrontCamera = wantedFacing == CameraCharacteristics.LENS_FACING_FRONT
+        activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED) {
@@ -416,18 +530,29 @@ class StreamerService : Service() {
                 rot.inputSurfaceTexture.setOnFrameAvailableListener(
                     { rot.renderFrame() }, cameraHandler)
                 glRotator = rot
+                // Preview = the encoder's exact output (same rotation, crop,
+                // denoise, zoom — what the PC sees), mirrored by the rotator.
+                // The old separate HAL preview target had its own geometry and
+                // showed framing the PC never got (e.g. the full 4:3 front
+                // sensor while the PC gets the 9:16 center-crop).
+                previewSurface?.let { rot.setPreviewSurface(it) }
+                glPreviewActive = previewSurface != null
                 Surface(rot.inputSurfaceTexture)
             } else codecInput
 
+            // Only the direct/landscape path still feeds the TextureView from
+            // the HAL; in GL mode the rotator owns the preview.
+            val halPreview = if (glRotator == null) previewSurface else null
+
             device.createCaptureSession(
-                listOfNotNull(captureTarget, previewSurface),
+                listOfNotNull(captureTarget, halPreview),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         try {
                         val req = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                             addTarget(captureTarget)
-                            previewSurface?.let { addTarget(it) }
+                            halPreview?.let { addTarget(it) }
                             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                             // Quality pass: sensor-stage cleanup beats encoder
                             // heroics, especially on the 2MP front cam at night.
@@ -450,6 +575,8 @@ class StreamerService : Service() {
                             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                 Range(if (usingFrontCamera) 24 else 15, VIDEO_FPS))
                         }
+                        applyZoomToRequest(req)
+                        reqBuilder = req
                         session.setRepeatingRequest(req.build(), null, cameraHandler)
                         thread(name = "CatCamEncoder") { drainEncoder(enc) }
                         Log.i(TAG, "Camera+encoder running ${encWidth}x$encHeight@$VIDEO_FPS rot=$rotateDeg")
