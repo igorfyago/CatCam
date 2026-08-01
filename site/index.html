@@ -4,159 +4,365 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CatCam · turn a spare tablet into your PC's webcam</title>
-<meta name="description" content="CatCam turns a spare Android tablet into a Windows webcam. Open source, no cloud, no accounts. Your video never leaves your network.">
+<meta name="description" content="CatCam turns a spare Android tablet into a Windows webcam, over Wi-Fi or USB. Open source, no cloud, no accounts. Your video never leaves your network.">
+<meta property="og:title" content="CatCam">
+<meta property="og:description" content="Turn a spare tablet into your PC's webcam. Over Wi-Fi or USB. No cloud, no accounts, open source.">
+<meta property="og:image" content="https://catcam.app/logo512.png">
+<link rel="icon" href="logo512.png">
 <style>
   :root {
-    --cream: #FFF3E0; --ink: #33302c; --soft: #6f675e;
-    --orange: #F59E4C; --card: #ffffff; --line: #eadfce;
+    --cream: #FFF6EA; --cream2: #FFF0DC; --peach: #FFE3C2;
+    --ink: #2A2622; --soft: #7A6F63; --line: #EFE2CE;
+    --orange: #F59E4C; --orange-deep: #E8862F; --live: #E53935;
+    --card: #FFFFFF;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     background: var(--cream); color: var(--ink);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    line-height: 1.6;
+    line-height: 1.6; overflow-x: hidden;
   }
-  .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 64px; }
-  header { text-align: center; padding-top: 24px; }
-  header img { width: 180px; height: 180px; }
-  h1 { font-size: 44px; letter-spacing: -0.5px; margin-top: 8px; }
-  .tagline { font-size: 20px; color: var(--soft); margin-top: 6px; }
-  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin: 32px 0 10px; }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ------------------------------------------------------------- nav */
+  nav {
+    position: sticky; top: 12px; z-index: 50;
+    max-width: 1080px; margin: 12px auto 0; padding: 0 12px;
+  }
+  .navbar {
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(255, 252, 246, .8); backdrop-filter: blur(14px);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 8px 10px 8px 16px;
+    box-shadow: 0 8px 30px rgba(120, 80, 30, .08);
+  }
+  .navbar img { width: 30px; height: 30px; }
+  .navbar .brand { font-weight: 800; font-size: 18px; letter-spacing: -.02em; }
+  .navbar .spacer { flex: 1; }
+  .navbar a.gh { font-size: 14px; color: var(--soft); text-decoration: none; margin-right: 6px; }
+  .navbar a.gh:hover { color: var(--ink); }
   .btn {
-    display: inline-block; padding: 14px 26px; border-radius: 999px;
-    font-weight: 600; text-decoration: none; font-size: 16px;
+    display: inline-block; border-radius: 999px; text-decoration: none;
+    font-weight: 700; font-size: 15px; padding: 12px 22px;
+    transition: transform .15s ease, opacity .15s ease;
   }
-  .btn-primary { background: var(--ink); color: #fff; }
-  .btn-secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
-  .btn:hover { opacity: .88; }
-  .req { text-align: center; color: var(--soft); font-size: 14px; margin-bottom: 40px; }
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 8px 0 40px; }
-  .step {
-    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-    padding: 20px 18px;
+  .btn:hover { transform: translateY(-1px); opacity: .92; }
+  .btn-dark { background: var(--ink); color: #fff; }
+  .btn-light { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+  .navbar .btn { padding: 9px 18px; font-size: 14px; }
+
+  /* ------------------------------------------------------------- hero */
+  .hero {
+    position: relative;
+    background:
+      radial-gradient(900px 480px at 85% -10%, var(--peach), transparent 70%),
+      radial-gradient(700px 420px at -10% 30%, #FFE9CE, transparent 70%);
+    padding: 72px 0 40px;
   }
-  .step b { display: block; font-size: 15px; margin-bottom: 6px; }
-  .step span { color: var(--soft); font-size: 14px; }
+  .hero .wrap { display: grid; grid-template-columns: 1.1fr .9fr; gap: 32px; align-items: center; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 14px; font-size: 13px; font-weight: 600; color: var(--soft);
+    box-shadow: 0 4px 14px rgba(120, 80, 30, .07); margin-bottom: 22px;
+  }
+  .kicker .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
+  h1 {
+    font-size: clamp(38px, 5.4vw, 60px); line-height: 1.05;
+    letter-spacing: -.03em; font-weight: 800; margin-bottom: 18px;
+  }
+  h1 em { font-style: normal; color: var(--orange-deep); }
+  .sub { font-size: 19px; color: var(--soft); max-width: 44ch; margin-bottom: 28px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  .req { font-size: 13.5px; color: var(--soft); }
+
+  .mockwrap { position: relative; justify-self: center; }
+  .mockwrap img.tablet {
+    width: min(340px, 78vw); display: block;
+    filter: drop-shadow(0 30px 60px rgba(90, 55, 15, .28));
+    border-radius: 28px;
+  }
+  .chip {
+    position: absolute; background: var(--card); border: 1px solid var(--line);
+    border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 700;
+    box-shadow: 0 10px 26px rgba(120, 80, 30, .16); white-space: nowrap;
+    animation: floaty 5s ease-in-out infinite;
+  }
+  .chip small { display: block; font-weight: 500; color: var(--soft); font-size: 11px; line-height: 1.2; }
+  .chip.c1 { top: 7%; left: -16%; animation-delay: 0s; }
+  .chip.c2 { top: 38%; right: -20%; animation-delay: 1.4s; }
+  .chip.c3 { bottom: 12%; left: -22%; animation-delay: 2.6s; }
+  .chip .livedot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--live); margin-right: 6px; }
+  @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+  .trust { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding: 26px 0 0; }
+  .trust span {
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: 8px 16px; font-size: 13.5px; font-weight: 600; color: var(--soft);
+  }
+
+  /* ------------------------------------------------------------- sections */
+  section { padding: 72px 0 0; }
+  .h2 {
+    font-size: clamp(28px, 3.6vw, 40px); font-weight: 800; letter-spacing: -.02em;
+    line-height: 1.15; margin-bottom: 10px;
+  }
+  .h2 em { font-style: normal; color: var(--orange-deep); }
+  .lead { color: var(--soft); font-size: 17px; max-width: 60ch; }
+  .center { text-align: center; }
+  .center .lead { margin: 0 auto; }
+
+  .panel {
+    background: linear-gradient(160deg, #FFFDF9, var(--cream2));
+    border: 1px solid var(--line); border-radius: 28px;
+    padding: 40px; margin-top: 28px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: center;
+  }
+  .panel h3 { font-size: 24px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 8px; }
+  .panel p { color: var(--soft); font-size: 15.5px; }
+  .panel .art { display: flex; align-items: center; justify-content: center; min-height: 190px; }
+
+  /* recreated app pills (the real UI, in CSS) */
+  .uiseg {
+    display: inline-flex; background: rgba(35, 30, 25, .78); border-radius: 999px; padding: 5px;
+    box-shadow: 0 16px 40px rgba(90, 55, 15, .25);
+  }
+  .uiseg b {
+    padding: 10px 22px; border-radius: 999px; font-size: 15px; color: rgba(255,255,255,.72);
+    font-weight: 600;
+  }
+  .uiseg b.on { background: #fff; color: #1c1a18; }
+  .uirow { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .uipill {
+    display: inline-flex; align-items: center; gap: 18px;
+    background: rgba(35, 30, 25, .78); border-radius: 999px; padding: 10px 22px;
+    color: #fff; font-weight: 600; font-size: 15px;
+    box-shadow: 0 16px 40px rgba(90, 55, 15, .25);
+  }
+  .uipill span { color: rgba(255,255,255,.65); }
+
+  /* beacon animation */
+  .beacon { position: relative; width: 240px; height: 190px; }
+  .beacon .node {
+    position: absolute; background: var(--ink); color: #fff; border-radius: 14px;
+    font-size: 12.5px; font-weight: 700; padding: 8px 12px;
+  }
+  .beacon .tab { left: 0; bottom: 12px; }
+  .beacon .pc { right: 0; top: 12px; }
+  .beacon .ring {
+    position: absolute; left: 26px; bottom: 24px; width: 14px; height: 14px;
+    border: 2px solid var(--orange); border-radius: 50%; opacity: 0;
+    animation: ping 2.4s ease-out infinite;
+  }
+  .beacon .ring:nth-child(4) { animation-delay: .8s; }
+  .beacon .ring:nth-child(5) { animation-delay: 1.6s; }
+  @keyframes ping {
+    0% { transform: scale(1); opacity: .9; }
+    100% { transform: scale(11); opacity: 0; }
+  }
+
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 28px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    padding: 22px 20px;
+  }
+  .card .ico { font-size: 22px; margin-bottom: 10px; display: block; }
+  .card b { display: block; font-size: 15.5px; margin-bottom: 6px; }
+  .card span { color: var(--soft); font-size: 14px; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 28px; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 24px 20px; }
   .num {
-    display: inline-flex; width: 26px; height: 26px; border-radius: 50%;
-    background: var(--orange); color: #fff; font-weight: 700; font-size: 14px;
-    align-items: center; justify-content: center; margin-bottom: 10px;
+    display: inline-flex; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--orange); color: #fff; font-weight: 800; font-size: 15px;
+    align-items: center; justify-content: center; margin-bottom: 12px;
   }
-  .features { margin: 0 0 40px; }
-  .features h2 { font-size: 22px; margin-bottom: 14px; text-align: center; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .feat {
-    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-    padding: 18px;
+  .step b { display: block; margin-bottom: 6px; font-size: 15.5px; }
+  .step span { color: var(--soft); font-size: 14px; }
+
+  .privacyband {
+    margin-top: 72px;
+    background: var(--ink); color: #FFF3E0; border-radius: 28px;
+    padding: 48px 40px; text-align: center;
   }
-  .feat b { display: block; font-size: 15px; margin-bottom: 4px; }
-  .feat span { color: var(--soft); font-size: 14px; }
-  .feat .tag {
-    display: inline-block; background: var(--orange); color: #fff;
-    font-size: 11px; font-weight: 700; border-radius: 999px;
-    padding: 2px 10px; margin-bottom: 8px; letter-spacing: .04em;
-  }
-  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
-  .privacy {
-    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-    padding: 24px; margin-bottom: 40px;
-  }
-  .privacy h2 { font-size: 20px; margin-bottom: 8px; }
-  .privacy p { color: var(--soft); font-size: 15px; }
-  .privacy a { color: var(--ink); }
-  footer { text-align: center; color: var(--soft); font-size: 14px; }
+  .privacyband .h2 { color: #fff; }
+  .privacyband .h2 em { color: var(--orange); }
+  .privacyband p { color: rgba(255, 243, 224, .75); max-width: 56ch; margin: 10px auto 24px; font-size: 16px; }
+  .privacyband .btn-light { border: none; }
+
+  footer { padding: 56px 0 48px; text-align: center; color: var(--soft); font-size: 14px; }
+  footer img { width: 56px; margin-bottom: 10px; }
   footer a { color: var(--ink); }
-  @media (max-width: 640px) {
-    .steps { grid-template-columns: 1fr; }
-    h1 { font-size: 34px; }
+  footer .links { display: flex; gap: 18px; justify-content: center; margin: 8px 0 14px; flex-wrap: wrap; }
+
+  /* reveal on scroll */
+  .rv { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s ease; }
+  .rv.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .rv { opacity: 1; transform: none; transition: none; }
+    .chip, .beacon .ring { animation: none; }
   }
+
+  @media (max-width: 860px) {
+    .hero .wrap { grid-template-columns: 1fr; text-align: center; }
+    .sub { margin-left: auto; margin-right: auto; }
+    .cta { justify-content: center; }
+    .mockwrap { margin-top: 26px; }
+    .chip.c1 { left: -2%; } .chip.c2 { right: -2%; } .chip.c3 { left: -4%; }
+    .panel { grid-template-columns: 1fr; padding: 28px 22px; }
+    .grid4 { grid-template-columns: 1fr 1fr; }
+    .steps { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 520px) { .grid4 { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <img src="logo512.png" alt="CatCam mascot: an orange cat hugging a tablet">
-    <h1>CatCam</h1>
-    <p class="tagline">Turn a spare tablet into your PC's webcam. Over Wi-Fi or USB.</p>
-    <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-windows-x64.zip">Download for Windows</a>
-      <a class="btn btn-secondary" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk">Get the tablet app</a>
-    </div>
-    <p class="req">Windows 11 (22H2 or newer) · Android 8+ · both on the same Wi-Fi, or a USB cable</p>
-  </header>
 
-  <div class="steps">
-    <div class="step">
-      <span class="num">1</span>
-      <b>Install the PC app</b>
-      <span>Unzip and run the installer on your Windows PC. A cat appears in your system tray.</span>
+<nav>
+  <div class="navbar">
+    <img src="logo512.png" alt="">
+    <span class="brand">CatCam</span>
+    <span class="spacer"></span>
+    <a class="gh" href="https://github.com/igorfyago/CatCam">GitHub</a>
+    <a class="btn btn-dark" href="#download">Download</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <span class="kicker"><span class="dot"></span> Free &amp; open source</span>
+      <h1>Your spare tablet is a <em>webcam</em>.</h1>
+      <p class="sub">CatCam turns any Android tablet into a crisp Windows webcam,
+      over <b>Wi-Fi or USB</b>. Two installs, zero setup: they find each other.</p>
+      <div class="cta" id="download">
+        <a class="btn btn-dark" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-windows-x64.zip">Download for Windows</a>
+        <a class="btn btn-light" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk">Get the tablet app</a>
+      </div>
+      <p class="req">Windows 11 (22H2+) · Android 8+ · same network, or a cable</p>
     </div>
-    <div class="step">
-      <span class="num">2</span>
-      <b>Install the tablet app</b>
-      <span>Put CatCam on the spare tablet and press the big button.</span>
-    </div>
-    <div class="step">
-      <span class="num">3</span>
-      <b>They find each other</b>
-      <span>Same network is enough. "CatCam" shows up as a camera in Teams, Zoom and everything else.</span>
+    <div class="mockwrap">
+      <img class="tablet" src="tablet_mock.webp" alt="The CatCam tablet app, live" width="852" height="1296">
+      <span class="chip c1"><span class="livedot"></span>LIVE · Wi-Fi</span>
+      <span class="chip c2">No cable needed<small>or plug one in, your call</small></span>
+      <span class="chip c3">Finds your PC by itself<small>no IPs, no pairing codes</small></span>
     </div>
   </div>
-
-  <div class="features">
-    <h2>What it does</h2>
-    <div class="grid">
-      <div class="feat">
-        <span class="tag">WI-FI OR USB</span>
-        <b>Connect either way</b>
-        <span>Stream cable-free over your home network, or plug in a USB cable
-        for a wired link. Switch between the two from the tablet or from the
-        PC, any time, mid-stream.</span>
-      </div>
-      <div class="feat">
-        <b>They find each other</b>
-        <span>No IP addresses, no pairing codes. The tablet announces itself
-        on your network and the PC connects on its own.</span>
-      </div>
-      <div class="feat">
-        <b>A preview you can trust</b>
-        <span>The tablet screen shows exactly the frame your PC receives,
-        the same zoom, colors and framing your call sees.</span>
-      </div>
-      <div class="feat">
-        <b>Zoom, tone, Day &amp; Night</b>
-        <span>Frame the shot with zoom buttons, nudge the color warmer or
-        cooler, and flip to a Night mode tuned for dark rooms. Each camera
-        remembers its own settings.</span>
-      </div>
-      <div class="feat">
-        <b>Front or back camera</b>
-        <span>Switch cameras with one tap on the tablet, or remotely from
-        the PC's tray menu, which also has start, stop and a live preview
-        window.</span>
-      </div>
-      <div class="feat">
-        <b>Sound included</b>
-        <span>The tablet's microphone streams alongside the video, with a
-        live level meter. On a weak network the video adapts its quality
-        instead of freezing.</span>
-      </div>
-    </div>
+  <div class="wrap trust rv">
+    <span>Works with Teams, Zoom &amp; Meet</span>
+    <span>No cloud, no accounts</span>
+    <span>GPL-2.0 open source</span>
   </div>
-
-  <div class="privacy">
-    <h2>No cloud. No accounts.</h2>
-    <p>Your video goes from the tablet straight to your own PC over your own
-    network, and nowhere else. There are no servers, no sign-ups, no analytics,
-    and the whole thing is open source, so you can check.
-    <a href="privacy.html">Privacy policy</a> ·
-    <a href="https://github.com/igorfyago/CatCam">Source on GitHub</a></p>
-  </div>
-
-  <footer>
-    CatCam is free and open source (GPL-2.0) ·
-    <a href="https://github.com/igorfyago/CatCam">github.com/igorfyago/CatCam</a>
-  </footer>
 </div>
+
+<section class="wrap">
+  <div class="center rv">
+    <h2 class="h2">A webcam that <em>gets out of your way</em></h2>
+    <p class="lead">Everything below is shipped and real, not a roadmap.</p>
+  </div>
+
+  <div class="panel rv">
+    <div>
+      <h3>Wi-Fi or USB. Switch mid-stream.</h3>
+      <p>Stream cable-free over your home network, or plug in a USB cable for a
+      wired link. Flip between the two from the tablet or from the PC's tray
+      menu, whichever is closer, without stopping your call.</p>
+    </div>
+    <div class="art">
+      <div class="uiseg"><b>USB</b><b class="on">Wi-Fi</b></div>
+    </div>
+  </div>
+
+  <div class="panel rv">
+    <div class="art">
+      <div class="beacon">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <span class="node tab">Tablet</span>
+        <span class="node pc">Your PC</span>
+      </div>
+    </div>
+    <div>
+      <h3>They find each other.</h3>
+      <p>The tablet announces itself on your network and the PC connects on its
+      own. No IP addresses, no QR codes, no pairing screens. If the tablet
+      moves, the PC follows.</p>
+    </div>
+  </div>
+
+  <div class="panel rv">
+    <div>
+      <h3>Frame it like a camera app.</h3>
+      <p>Zoom with a tap, nudge the color warmer or cooler, and flip to a Night
+      mode tuned for dark rooms. Each camera remembers its own settings, and
+      the tablet preview shows <b>exactly</b> the frame your call receives.</p>
+    </div>
+    <div class="art">
+      <div class="uirow">
+        <div class="uipill"><span>−</span> 1.0× <span>+</span></div>
+        <div class="uipill">Cool <span>0</span> Warm</div>
+        <div class="uiseg"><b>Day</b><b class="on">Night</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="center rv">
+    <h2 class="h2">Up and running in <em>three steps</em></h2>
+  </div>
+  <div class="steps rv">
+    <div class="step"><span class="num">1</span><b>Install the PC app</b>
+      <span>Run it on your Windows PC. A cat appears in your system tray.</span></div>
+    <div class="step"><span class="num">2</span><b>Install the tablet app</b>
+      <span>Put CatCam on the spare tablet and press the big button.</span></div>
+    <div class="step"><span class="num">3</span><b>That's it</b>
+      <span>"CatCam" shows up as a camera in Teams, Zoom and everything else.</span></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="center rv">
+    <h2 class="h2">Why CatCam is <em>different</em></h2>
+  </div>
+  <div class="grid4 rv">
+    <div class="card"><span class="ico">🔍</span><b>Open, all the way down</b>
+      <span>The whole thing is GPL-2.0 source you can read, build and change.</span></div>
+    <div class="card"><span class="ico">🏠</span><b>Your network only</b>
+      <span>Video goes tablet to PC, point to point. No servers exist.</span></div>
+    <div class="card"><span class="ico">📶</span><b>Honest on weak Wi-Fi</b>
+      <span>Quality adapts to what your network delivers instead of freezing.</span></div>
+    <div class="card"><span class="ico">🎙️</span><b>Sound included</b>
+      <span>The tablet mic streams alongside video, with a live level meter.</span></div>
+  </div>
+</section>
+
+<div class="wrap">
+  <div class="privacyband rv">
+    <h2 class="h2">No cloud. No accounts. <em>No kidding.</em></h2>
+    <p>There is nothing to sign up for and nowhere for your video to go except
+    your own PC. No analytics, no telemetry, no third-party services. The code
+    is public, so this is checkable, not a promise.</p>
+    <a class="btn btn-light" href="privacy.html">Read the privacy policy</a>
+  </div>
+</div>
+
+<footer>
+  <img src="logo512.png" alt="CatCam mascot">
+  <div class="links">
+    <a href="https://github.com/igorfyago/CatCam">GitHub</a>
+    <a href="privacy.html">Privacy</a>
+    <a href="https://github.com/igorfyago/CatCam/releases/latest">Releases</a>
+  </div>
+  CatCam is free and open source (GPL-2.0)
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => {
+    for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+  }, { threshold: 0.12 });
+  document.querySelectorAll(".rv").forEach(el => io.observe(el));
+</script>
 </body>
 </html>
