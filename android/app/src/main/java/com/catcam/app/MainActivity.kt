@@ -263,7 +263,15 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
         statusPill.text = text
         statusPill.backgroundTintList = ColorStateList.valueOf(color)
+        // First-run onboarding: while waiting and no PC has EVER connected,
+        // point at the PC app. Once any PC has connected, never show again.
+        if (StreamerService.clientConnected) everConnected = true
+        findViewById<TextView>(R.id.get_pc_hint).visibility =
+            if (!everConnected && text.startsWith("Waiting")) android.view.View.VISIBLE
+            else android.view.View.GONE
     }
+
+    private var everConnected = false
 
     private var cachedIp: String? = null
     private var cachedIpMs = 0L
