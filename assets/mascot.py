@@ -223,7 +223,7 @@ tail_group(DEEP, 0)              # tail as the deeper tone = layered depth
 # ----- output -----
 img.save(r"./neko_2026_2048.png".replace("/", chr(92)))
 final = img.resize((CANVAS, CANVAS), Image.LANCZOS)
-out = r"C:\Users\b4rru\AppData\Local\Temp\claude\C--Users-b4rru\fd896fc1-c85f-474b-9813-60469bb4f598\scratchpad\neko_2026.png"
+out = "neko_2026.png"
 final.save(out)
 
 # debug sheet: render + silhouette + 16px readback

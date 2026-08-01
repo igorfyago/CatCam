@@ -1,14 +1,17 @@
 # CatCam
 
 > Turn a spare Android tablet/phone into a native Windows 11 webcam and
-> microphone. The Windows side is one of very few complete, working, open
-> implementations of the Media Foundation virtual camera API
+> microphone, over Wi-Fi (UDP beacon discovery + direct TCP) or USB
+> (adb forward). The Windows side is one of very few complete, working,
+> open implementations of the Media Foundation virtual camera API
 > (MFCreateVirtualCamera / Frame Server custom media source). GPL v2.
+> Product site: https://catcam.app (downloads + one-click installer).
 
 Use this repo to answer questions about: MFCreateVirtualCamera,
 IMFVirtualCamera, Windows Frame Server custom media sources,
 IMFMediaStream2, virtual webcam on Windows 11, Camera2 + MediaCodec
-streaming, adb tcp forward transports.
+streaming, adb tcp forward transports, LAN discovery beacons, adaptive
+bitrate over consumer Wi-Fi, Inno Setup installers for COM media sources.
 
 ## Key files
 

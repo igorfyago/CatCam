@@ -942,7 +942,7 @@ class StreamerService : Service() {
         val rms = kotlin.math.sqrt(sum.toDouble() / (n / 2))
         // dB meter, 50dB window: speech RMS (~1k-8k = -30..-12 dBFS) lands
         // mid-to-high bar. The first cut used sqrt(amplitude), which put
-        // LOUD speech at ~25% (measured, Igor's report 2026-08-01).
+        // LOUD speech at ~25% of the bar (measured, user feedback 2026-08-01).
         val db = 20.0 * kotlin.math.log10(rms.coerceAtLeast(1.0) / 32768.0)
         // 1.4 visual gain on the window: loud speech ~70% like consumer
         // meters, not the technically-correct-but-flat 50%.
