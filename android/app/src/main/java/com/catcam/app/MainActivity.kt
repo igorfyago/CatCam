@@ -40,9 +40,24 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var zoomInBtn: Button
     private lateinit var zoomOutBtn: Button
     private lateinit var zoomLabel: TextView
+    private lateinit var toneCoolBtn: Button
+    private lateinit var toneWarmBtn: Button
+    private lateinit var toneLabel: TextView
+    private lateinit var dayNightBtn: Button
+    private lateinit var audioBar: android.widget.ProgressBar
     private lateinit var preview: TextureView
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // The mic bar needs to feel live: 100ms, ~matching the 10/s PCM chunk
+    // rate. Kept separate from the 500ms state ticker on purpose.
+    private val levelTicker = object : Runnable {
+        override fun run() {
+            audioBar.progress = (StreamerService.audioLevel * 100).toInt()
+            handler.postDelayed(this, 100)
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             val streaming = StreamerService.statusText != "Idle"
@@ -52,6 +67,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             stopBtn.isEnabled = streaming
             flipBtn.text = if (StreamerService.preferFrontCamera) "Front" else "Back"
             updateZoomLabel()
+            updateTuningLabels()
             if (StreamerService.glPreviewActive) {
                 // GL letterboxes the encoder frame into the view (the "what
                 // the PC sees" preview); the matrix must not fight it.
@@ -75,10 +91,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         zoomOutBtn = findViewById(R.id.zoom_out)
         zoomInBtn = findViewById(R.id.zoom_in)
         zoomLabel = findViewById(R.id.zoom_label)
+        toneCoolBtn = findViewById(R.id.tone_cool)
+        toneWarmBtn = findViewById(R.id.tone_warm)
+        toneLabel = findViewById(R.id.tone_label)
+        dayNightBtn = findViewById(R.id.day_night)
+        audioBar = findViewById(R.id.audio_level)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
         StreamerService.loadCameraPref(this)
         updateZoomLabel()
+        updateTuningLabels()
 
         startBtn.setOnClickListener {
             if (hasPerms()) startStreaming() else
@@ -90,10 +112,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         flipBtn.setOnClickListener {
             StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
             StreamerService.saveCameraPref(this)
-            // Each camera keeps its own zoom (calls vs cat duty want different
-            // framing): pull the new camera's saved value and limits.
+            // Each camera keeps its own zoom and tone (calls vs cat duty want
+            // different framing): pull the new camera's saved values.
             StreamerService.loadCameraPref(this)
             updateZoomLabel()
+            updateTuningLabels()
             if (StreamerService.statusText != "Idle") {
                 startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
                 handler.postDelayed({ startStreaming() }, 800)
@@ -101,9 +124,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
         zoomOutBtn.setOnClickListener { stepZoom(1f / StreamerService.ZOOM_STEP) }
         zoomInBtn.setOnClickListener { stepZoom(StreamerService.ZOOM_STEP) }
+        toneCoolBtn.setOnClickListener { stepTone(-1) }
+        toneWarmBtn.setOnClickListener { stepTone(+1) }
+        dayNightBtn.setOnClickListener {
+            StreamerService.setDayMode(this, !StreamerService.dayMode)
+            updateTuningLabels()
+        }
 
         requestBatteryExemption()
         handler.post(ticker)
+        handler.post(levelTicker)
     }
 
     private fun hasPerms() = perms.all {
@@ -131,6 +161,18 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private fun updateZoomLabel() {
         zoomLabel.text = String.format(java.util.Locale.US, "%.1f×", StreamerService.zoomRatio)
+    }
+
+    private fun stepTone(delta: Int) {
+        StreamerService.setTone(this, StreamerService.toneStep + delta)
+        updateTuningLabels()
+    }
+
+    private fun updateTuningLabels() {
+        val t = StreamerService.toneStep
+        toneLabel.text = if (t > 0) "+$t" else "$t"
+        // Like Flip, the button names the CURRENT state.
+        dayNightBtn.text = if (StreamerService.dayMode) "Day" else "Night"
     }
 
     private fun requestBatteryExemption() {
@@ -199,6 +241,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(levelTicker)
         StreamerService.attachPreview(null)
         super.onDestroy()
     }

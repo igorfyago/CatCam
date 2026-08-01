@@ -89,6 +89,9 @@ class StreamerService : Service() {
         private const val KEY_PREFER_FRONT = "prefer_front_camera"
         private const val KEY_ZOOM_FRONT = "zoom_front"
         private const val KEY_ZOOM_BACK = "zoom_back"
+        private const val KEY_TONE_FRONT = "tone_front"
+        private const val KEY_TONE_BACK = "tone_back"
+        private const val KEY_DAY_MODE = "day_mode"
 
         // Multiplicative per tap: even perceived steps across the whole range
         // (1x to this HAL's 10x in ~10 taps). Additive steps feel huge near 1x
@@ -105,13 +108,33 @@ class StreamerService : Service() {
         @Volatile var zoomMax = 1f
             private set
 
+        // Color tone: small warm/cool bias in [-2, 2] (positive = warm),
+        // per camera, applied in the GL pass so the stream and the preview
+        // grade identically by construction.
+        @Volatile var toneStep = 0
+            private set
+
+        // Day/Night capture tuning. Night (default) = the measured lesson-34
+        // balance: NR HIGH_QUALITY, EDGE OFF (sharpening turns high-ISO grain
+        // into dotted static), temporal blend 0.55. Day = daylight detail:
+        // NR FAST, EDGE FAST, no temporal smoothing. Global: it is about the
+        // room light, not the camera.
+        @Volatile var dayMode = false
+            private set
+
+        // Mic level 0..1 (RMS with a sqrt curve so speech sits mid-bar),
+        // published ~10/s while streaming; the UI draws it as a small bar.
+        @Volatile var audioLevel = 0f
+            private set
+
         fun loadCameraPref(ctx: Context) {
-            preferFrontCamera = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean(KEY_PREFER_FRONT, true)
+            val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            preferFrontCamera = sp.getBoolean(KEY_PREFER_FRONT, true)
             zoomMax = queryMaxZoom(ctx)
-            zoomRatio = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, 1f)
+            zoomRatio = sp.getFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, 1f)
                 .coerceIn(1f, zoomMax)
+            toneStep = sp.getInt(if (preferFrontCamera) KEY_TONE_FRONT else KEY_TONE_BACK, 0)
+            dayMode = sp.getBoolean(KEY_DAY_MODE, false)
         }
 
         // UI entry: clamp, persist for this camera, and push into the live
@@ -122,7 +145,26 @@ class StreamerService : Service() {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, zoomRatio)
                 .apply()
-            instance?.pushZoomLive()
+            instance?.pushCaptureTuning()
+        }
+
+        // Tone lives entirely in the GL pass: no capture-request rebuild.
+        fun setTone(ctx: Context, step: Int) {
+            toneStep = step.coerceIn(-2, 2)
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt(if (preferFrontCamera) KEY_TONE_FRONT else KEY_TONE_BACK, toneStep)
+                .apply()
+            instance?.glRotator?.setTone(toneStep)
+        }
+
+        // Day/Night touches both worlds: HAL (NR/EDGE via the repeating
+        // request) and GL (temporal blend weight). Both apply live.
+        fun setDayMode(ctx: Context, on: Boolean) {
+            dayMode = on
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_DAY_MODE, on).apply()
+            instance?.glRotator?.setDayMode(on)
+            instance?.pushCaptureTuning()
         }
 
         // Characteristics query only, no camera open. Both SM-T220 cameras
@@ -237,6 +279,7 @@ class StreamerService : Service() {
         sendQ.clear()
         glPreviewActive = false
         reqBuilder = null
+        audioLevel = 0f
         try { serverSocket?.close() } catch (_: Exception) {}
         try { captureSession?.close() } catch (_: Exception) {}
         try { cameraDevice?.close() } catch (_: Exception) {}
@@ -254,36 +297,54 @@ class StreamerService : Service() {
 
     override fun onDestroy() { stopStreaming(); instance = null; super.onDestroy() }
 
-    // -------------------------------------------------------------------- zoom
+    // ---------------------------------------------------------- capture tuning
 
-    // HAL zoom. API 30+ has the first-class control; older devices get the
-    // same effect via a centered SCALER_CROP_REGION over the active array.
-    private fun applyZoomToRequest(req: CaptureRequest.Builder) {
+    // Everything user-adjustable that lives in the CaptureRequest: zoom and
+    // the Day/Night NR+EDGE pair. One owner so the initial request and every
+    // live re-push are guaranteed identical.
+    private fun applyTuningToRequest(req: CaptureRequest.Builder) {
+        // HAL zoom. API 30+ has the first-class control; older devices get
+        // the same effect via a centered SCALER_CROP_REGION over the active
+        // array.
         val z = zoomRatio.coerceIn(1f, zoomMax)
         if (Build.VERSION.SDK_INT >= 30) {
             req.set(CaptureRequest.CONTROL_ZOOM_RATIO, z)
         } else {
-            val arr = activeArray ?: return
-            val cw = (arr.width() / z).toInt()
-            val ch = (arr.height() / z).toInt()
-            val cx = arr.left + (arr.width() - cw) / 2
-            val cy = arr.top + (arr.height() - ch) / 2
-            req.set(CaptureRequest.SCALER_CROP_REGION,
-                android.graphics.Rect(cx, cy, cx + cw, cy + ch))
+            val arr = activeArray
+            if (arr != null) {
+                val cw = (arr.width() / z).toInt()
+                val ch = (arr.height() / z).toInt()
+                val cx = arr.left + (arr.width() - cw) / 2
+                val cy = arr.top + (arr.height() - ch) / 2
+                req.set(CaptureRequest.SCALER_CROP_REGION,
+                    android.graphics.Rect(cx, cy, cx + cw, cy + ch))
+            }
         }
+        // Night (default) = the measured lesson-34 balance: sensor-stage
+        // cleanup beats encoder heroics, and EDGE stays OFF because any
+        // sharpening gives high-ISO noise dots hard outlines the encoder
+        // then spends bits preserving. Day = daylight detail: light NR keeps
+        // texture, EDGE FAST was part of the original working balance.
+        req.set(CaptureRequest.NOISE_REDUCTION_MODE,
+            if (dayMode) CaptureRequest.NOISE_REDUCTION_MODE_FAST
+            else CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+        req.set(CaptureRequest.EDGE_MODE,
+            if (dayMode) CaptureRequest.EDGE_MODE_FAST
+            else CaptureRequest.EDGE_MODE_OFF)
+        Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep")
     }
 
-    private fun pushZoomLive() {
+    private fun pushCaptureTuning() {
         val session = captureSession ?: return
         val req = reqBuilder ?: return
         cameraHandler?.post {
             try {
-                applyZoomToRequest(req)
+                applyTuningToRequest(req)
                 session.setRepeatingRequest(req.build(), null, cameraHandler)
             } catch (e: Exception) {
                 // Session mid-teardown (stop/flip race): harmless, the next
-                // session build re-applies the persisted zoom anyway.
-                Log.w(TAG, "zoom apply: ${e.message}")
+                // session build re-applies the persisted tuning anyway.
+                Log.w(TAG, "tuning apply: ${e.message}")
             }
         }
     }
@@ -530,11 +591,13 @@ class StreamerService : Service() {
                 rot.inputSurfaceTexture.setOnFrameAvailableListener(
                     { rot.renderFrame() }, cameraHandler)
                 glRotator = rot
+                rot.setTone(toneStep)
+                rot.setDayMode(dayMode)
                 // Preview = the encoder's exact output (same rotation, crop,
-                // denoise, zoom — what the PC sees), mirrored by the rotator.
-                // The old separate HAL preview target had its own geometry and
-                // showed framing the PC never got (e.g. the full 4:3 front
-                // sensor while the PC gets the 9:16 center-crop).
+                // denoise, zoom, tone — what the PC sees), mirrored by the
+                // rotator. The old separate HAL preview target had its own
+                // geometry and showed framing the PC never got (e.g. the full
+                // 4:3 front sensor while the PC gets the 9:16 center-crop).
                 previewSurface?.let { rot.setPreviewSurface(it) }
                 glPreviewActive = previewSurface != null
                 Surface(rot.inputSurfaceTexture)
@@ -554,17 +617,7 @@ class StreamerService : Service() {
                             addTarget(captureTarget)
                             halPreview?.let { addTarget(it) }
                             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                            // Quality pass: sensor-stage cleanup beats encoder
-                            // heroics, especially on the 2MP front cam at night.
-                            set(CaptureRequest.NOISE_REDUCTION_MODE,
-                                CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-                            // EDGE OFF (was HIGH_QUALITY -> FAST -> OFF, review
-                            // consensus): on a 2MP sensor at night there is no
-                            // fine detail to enhance, only grain, and any
-                            // sharpening gives noise dots hard outlines the
-                            // encoder then spends bits preserving.
-                            set(CaptureRequest.EDGE_MODE,
-                                CaptureRequest.EDGE_MODE_OFF)
+                            // NR/EDGE live in applyTuningToRequest (Day/Night).
                             // Brightness vs motion-smoothness dial, per camera
                             // (measured: AE floor 15 in a dark room ran the
                             // sensor at ~17fps and 41% of delivered frames
@@ -575,7 +628,7 @@ class StreamerService : Service() {
                             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                 Range(if (usingFrontCamera) 24 else 15, VIDEO_FPS))
                         }
-                        applyZoomToRequest(req)
+                        applyTuningToRequest(req)
                         reqBuilder = req
                         session.setRepeatingRequest(req.build(), null, cameraHandler)
                         thread(name = "CatCamEncoder") { drainEncoder(enc) }
@@ -702,6 +755,30 @@ class StreamerService : Service() {
         t.write(chunk, 0, n, AudioTrack.WRITE_NON_BLOCKING)
     }
 
+    // Mic level for the UI bar: math on the chunk already in hand, ~10/s,
+    // never touches the capture cadence. Logged 1/s: "no audio" complaints
+    // are diagnosable from logcat alone (the audio path fails silently
+    // otherwise, lesson 33).
+    private var lastLevelLogMs = 0L
+    private fun publishLevel(chunk: ByteArray, n: Int) {
+        var sum = 0L
+        var i = 0
+        while (i + 1 < n) {
+            // PCM 16-bit little-endian
+            val s = ((chunk[i + 1].toInt() shl 8) or (chunk[i].toInt() and 0xff)).toShort().toInt()
+            sum += s.toLong() * s
+            i += 2
+        }
+        val rms = kotlin.math.sqrt(sum.toDouble() / (n / 2))
+        // sqrt curve: speech RMS (~1k-8k) lands mid-bar instead of hugging 0.
+        audioLevel = kotlin.math.sqrt(rms / 32768.0).toFloat().coerceIn(0f, 1f)
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastLevelLogMs >= 1000) {
+            lastLevelLogMs = now
+            Log.i(TAG, "mic level=${"%.2f".format(java.util.Locale.US, audioLevel)}")
+        }
+    }
+
     private fun audioLoop() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
@@ -722,6 +799,7 @@ class StreamerService : Service() {
                 if (n > 0) {
                     sendPacket(0x03, chunk.copyOf(n))
                     renderToJack(chunk, n)
+                    publishLevel(chunk, n)
                 }
             }
         } catch (e: Exception) {

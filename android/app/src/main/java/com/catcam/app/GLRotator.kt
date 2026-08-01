@@ -57,8 +57,9 @@ class GLRotator(
             precision mediump float;
             varying vec2 vTextureCoord;
             uniform samplerExternalOES sTexture;
+            uniform vec3 uGain;
             void main() {
-                gl_FragColor = texture2D(sTexture, vTextureCoord);
+                gl_FragColor = vec4(texture2D(sTexture, vTextureCoord).rgb * uGain, 1.0);
             }
         """
 
@@ -87,6 +88,9 @@ class GLRotator(
             }
         """
 
+        // Tone gain multiplies the FRESH frame only; the accumulator is
+        // already graded, so every pixel is gained exactly once regardless of
+        // how long it survives in the blend.
         private const val BLEND_FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
@@ -95,8 +99,10 @@ class GLRotator(
             uniform samplerExternalOES sTexture;   // fresh camera frame
             uniform sampler2D sAccum;              // previous blended output
             uniform float uNewWeight;
+            uniform vec3 uGain;
             void main() {
                 vec4 cam = texture2D(sTexture, vTextureCoord);
+                cam.rgb *= uGain;
                 vec4 acc = texture2D(sAccum, vPlainCoord);
                 gl_FragColor = mix(acc, cam, uNewWeight);
             }
@@ -141,6 +147,13 @@ class GLRotator(
     private var aTextureCoordLoc = 0
     private var uMVPMatrixLoc = 0
     private var uTexMatrixLoc = 0
+    private var uGainLoc = 0
+
+    // Tone: subtle warm/cool RGB gain, written by setTone, read per frame.
+    private val toneGain = floatArrayOf(1f, 1f, 1f)
+    // Temporal blend weight: NEW_WEIGHT at night (the measured tuning),
+    // 1.0 in day mode = no temporal smoothing, crispest motion.
+    @Volatile private var newWeight = NEW_WEIGHT
 
     // Temporal denoise (two-pass, ping-pong FBO). denoiseOk=false at any
     // init failure falls back to the original direct path forever.
@@ -158,6 +171,7 @@ class GLRotator(
     private var bSTexture = 0
     private var bSAccum = 0
     private var bUNewWeight = 0
+    private var bUGain = 0
     private var cAPosition = 0
     private var cATexCoord = 0
     private var cUMVP = 0
@@ -207,6 +221,7 @@ class GLRotator(
             bSTexture = GLES20.glGetUniformLocation(blendProgram, "sTexture")
             bSAccum = GLES20.glGetUniformLocation(blendProgram, "sAccum")
             bUNewWeight = GLES20.glGetUniformLocation(blendProgram, "uNewWeight")
+            bUGain = GLES20.glGetUniformLocation(blendProgram, "uGain")
 
             copyProgram = linkProgram(VERTEX_SHADER, COPY_FRAGMENT_SHADER)
             cAPosition = GLES20.glGetAttribLocation(copyProgram, "aPosition")
@@ -249,6 +264,25 @@ class GLRotator(
         inHeight = h
         inputSurfaceTexture.setDefaultBufferSize(w, h)
         accumValid = false // stale accumulator would ghost the old framing
+    }
+
+    /**
+     * Subtle warm/cool bias: step in [-2, 2], positive = warm. Applied to the
+     * fresh camera frame in the blend (or direct) pass, so the encoder and the
+     * preview see the identical grade. Safe from any thread (no EGL calls).
+     */
+    fun setTone(step: Int) {
+        val s = step.coerceIn(-2, 2)
+        toneGain[0] = 1f + 0.05f * s
+        toneGain[1] = 1f + 0.015f * s
+        toneGain[2] = 1f - 0.05f * s
+        logFrames = 3
+    }
+
+    /** Day = no temporal smoothing (crispest motion, daylight has no grain to
+     *  hide); night = the measured NEW_WEIGHT blend. Safe from any thread. */
+    fun setDayMode(on: Boolean) {
+        newWeight = if (on) 1f else NEW_WEIGHT
     }
 
     /**
@@ -332,7 +366,8 @@ class GLRotator(
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, accumTex[read])
             GLES20.glUniform1i(bSAccum, 1)
             // First frame after (re)config seeds the accumulator raw.
-            GLES20.glUniform1f(bUNewWeight, if (accumValid) NEW_WEIGHT else 1f)
+            GLES20.glUniform1f(bUNewWeight, if (accumValid) newWeight else 1f)
+            GLES20.glUniform3fv(bUGain, 1, toneGain, 0)
             GLES20.glUniformMatrix4fv(bUMVP, 1, false, mvpMatrix, 0)
             GLES20.glUniformMatrix4fv(bUTexMatrix, 1, false, texMatrix, 0)
             drawQuad(bAPosition, bATexCoord)
@@ -358,6 +393,7 @@ class GLRotator(
             GLES20.glUseProgram(program)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+            GLES20.glUniform3fv(uGainLoc, 1, toneGain, 0)
             GLES20.glUniformMatrix4fv(uMVPMatrixLoc, 1, false, mvpMatrix, 0)
             GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
             drawQuad(aPositionLoc, aTextureCoordLoc)
@@ -408,6 +444,7 @@ class GLRotator(
                 GLES20.glUseProgram(program)
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
                 GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+                GLES20.glUniform3fv(uGainLoc, 1, toneGain, 0)
                 GLES20.glUniformMatrix4fv(uMVPMatrixLoc, 1, false, mvpMatrix, 0)
                 GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
                 drawQuad(aPositionLoc, aTextureCoordLoc)
@@ -514,6 +551,7 @@ class GLRotator(
         aTextureCoordLoc = GLES20.glGetAttribLocation(p, "aTextureCoord")
         uMVPMatrixLoc = GLES20.glGetUniformLocation(p, "uMVPMatrix")
         uTexMatrixLoc = GLES20.glGetUniformLocation(p, "uTexMatrix")
+        uGainLoc = GLES20.glGetUniformLocation(p, "uGain")
         return p
     }
 
