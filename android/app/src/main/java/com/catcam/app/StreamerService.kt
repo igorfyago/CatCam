@@ -855,8 +855,16 @@ class StreamerService : Service() {
             i += 2
         }
         val rms = kotlin.math.sqrt(sum.toDouble() / (n / 2))
-        // sqrt curve: speech RMS (~1k-8k) lands mid-bar instead of hugging 0.
-        audioLevel = kotlin.math.sqrt(rms / 32768.0).toFloat().coerceIn(0f, 1f)
+        // dB meter, 50dB window: speech RMS (~1k-8k = -30..-12 dBFS) lands
+        // mid-to-high bar. The first cut used sqrt(amplitude), which put
+        // LOUD speech at ~25% (measured, Igor's report 2026-08-01).
+        val db = 20.0 * kotlin.math.log10(rms.coerceAtLeast(1.0) / 32768.0)
+        // 1.4 visual gain on the window: loud speech ~70% like consumer
+        // meters, not the technically-correct-but-flat 50%.
+        val instant = (((db + 50.0) / 50.0) * 1.4).toFloat().coerceIn(0f, 1f)
+        // Fast attack, slow decay (~0.8s full fall): speech pumps the bar
+        // instead of flickering it at chunk rate.
+        audioLevel = kotlin.math.max(instant, audioLevel * 0.75f)
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastLevelLogMs >= 1000) {
             lastLevelLogMs = now
