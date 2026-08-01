@@ -239,11 +239,29 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         val (text, color) = when {
             s.startsWith("Streaming") && StreamerService.clientConnected -> "LIVE" to COLOR_LIVE
             s == "Idle" -> "Idle" to COLOR_IDLE
-            s.startsWith("Waiting") || s.startsWith("Streaming") -> "Waiting for PC" to COLOR_WAIT
+            // While waiting, show this tablet's address: it is what the PC
+            // side needs for cable-free (direct TCP) mode.
+            s.startsWith("Waiting") || s.startsWith("Streaming") ->
+                (lanIp()?.let { "Waiting for PC · $it" } ?: "Waiting for PC") to COLOR_WAIT
             else -> s to COLOR_WAIT   // error strings surface as-is
         }
         statusPill.text = text
         statusPill.backgroundTintList = ColorStateList.valueOf(color)
+    }
+
+    private var cachedIp: String? = null
+    private var cachedIpMs = 0L
+    private fun lanIp(): String? {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - cachedIpMs < 5000) return cachedIp
+        cachedIpMs = now
+        cachedIp = try {
+            java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                .flatMap { it.inetAddresses.asSequence() }
+                .firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }
+                ?.hostAddress
+        } catch (e: Exception) { null }
+        return cachedIp
     }
 
     private fun updateShutter() {

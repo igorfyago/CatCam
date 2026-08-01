@@ -151,6 +151,17 @@ class GLRotator(
 
     // Tone: subtle warm/cool RGB gain, written by setTone, read per frame.
     private val toneGain = floatArrayOf(1f, 1f, 1f)
+
+    // ABR frame shedding: render every Nth camera frame (1 = all). The
+    // skipped frames still updateTexImage (the buffer must be released back
+    // to the camera or the HAL starves), they just are not drawn/encoded.
+    @Volatile private var renderDivisor = 1
+    private var frameCounter = 0
+
+    /** 1 = every frame, 2 = ~15fps, 3 = ~10fps. Safe from any thread. */
+    fun setRenderDivisor(n: Int) {
+        renderDivisor = n.coerceIn(1, 3)
+    }
     // Temporal blend weight: NEW_WEIGHT at night (the measured tuning),
     // 1.0 in day mode = no temporal smoothing, crispest motion.
     @Volatile private var newWeight = NEW_WEIGHT
@@ -336,6 +347,10 @@ class GLRotator(
 
         inputSurfaceTexture.updateTexImage()
         inputSurfaceTexture.getTransformMatrix(stMatrix)
+
+        // ABR shed: buffer consumed above, frame simply not encoded.
+        frameCounter++
+        if (frameCounter % renderDivisor != 0) return
 
         computeTexMatrix()
 

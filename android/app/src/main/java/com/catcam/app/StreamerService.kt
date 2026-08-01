@@ -81,6 +81,16 @@ class StreamerService : Service() {
         // the network can NEVER back-pressure capture (HANDOFF lesson 37).
         private const val SEND_QUEUE_PACKETS = 60
 
+        // Adaptive bitrate (WiFi PoC). The send queue is the bandwidth probe:
+        // drops or a deep queue mean the link is smaller than the stream, so
+        // halve the encoder bitrate (down to ABR_FLOOR, then shed frames);
+        // a clean queue for ABR_CLEAN_SECS earns a 25% raise back toward
+        // VIDEO_BITRATE. On USB the queue never backs up (measured depth 0),
+        // so the controller never fires and behavior is bit-identical.
+        private const val ABR_FLOOR = 150_000
+        private const val ABR_TICK_MS = 1000L
+        private const val ABR_CLEAN_SECS = 5
+
         @Volatile var preferFrontCamera = true
 
         // Last user camera choice survives process restarts (tray auto-restart,
@@ -238,6 +248,13 @@ class StreamerService : Service() {
     private val sendQ = LinkedBlockingDeque<Pair<Byte, ByteArray>>(SEND_QUEUE_PACKETS)
     @Volatile private var lastSyncReqMs = 0L
     @Volatile private var droppedVideo = false
+
+    // ABR state. Owned by the sender thread except dropTally (incremented
+    // from capture threads on overflow).
+    private val dropTally = java.util.concurrent.atomic.AtomicInteger(0)
+    private var abrBitrate = VIDEO_BITRATE
+    private var abrCleanSecs = 0
+    private var abrDivisor = 1
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -422,6 +439,7 @@ class StreamerService : Service() {
             // into a ~100KB IDR, one whole frame arrived per ~30s). Flag it;
             // the sender asks once the queue has drained room for an IDR.
             droppedVideo = true
+            dropTally.incrementAndGet()
         }
     }
 
@@ -443,6 +461,9 @@ class StreamerService : Service() {
     private fun senderLoop(o: DataOutputStream) {
         var sent = 0
         var lastStat = android.os.SystemClock.elapsedRealtime()
+        var lastAbr = lastStat
+        // Fresh client, fresh link: start optimistic and let AIMD find it.
+        abrReset()
         try {
             while (running.get() && clientConnected) {
                 val pkt = sendQ.pollFirst(500, TimeUnit.MILLISECONDS) ?: continue
@@ -456,14 +477,78 @@ class StreamerService : Service() {
                     requestSyncFrameRateLimited()
                 }
                 val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastAbr >= ABR_TICK_MS) {
+                    lastAbr = now
+                    abrTick()
+                }
                 if (now - lastStat >= 10_000) {
-                    Log.i(TAG, "sender: $sent pkts/10s, queue depth ${sendQ.size}")
+                    Log.i(TAG, "sender: $sent pkts/10s, queue depth ${sendQ.size}, " +
+                        "abr ${abrBitrate / 1000}k div=$abrDivisor")
                     sent = 0; lastStat = now
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "sender: ${e.message}")
         }
+    }
+
+    // ------------------------------------------------------------------ ABR
+
+    private fun abrReset() {
+        dropTally.set(0)
+        abrCleanSecs = 0
+        if (abrBitrate != VIDEO_BITRATE) applyBitrate(VIDEO_BITRATE)
+        if (abrDivisor != 1) applyDivisor(1)
+    }
+
+    // AIMD, once per second on the sender thread. Congestion = any overflow
+    // drop or a queue past half. Cut bitrate first (halve, floor 150k);
+    // only at the floor start shedding frames (30 -> 15 -> 10 fps). Recovery
+    // is the mirror: frames first, then bitrate, each step gated on
+    // ABR_CLEAN_SECS of clean queue.
+    private fun abrTick() {
+        val drops = dropTally.getAndSet(0)
+        val depth = sendQ.size
+        if (drops > 0 || depth > SEND_QUEUE_PACKETS / 2) {
+            abrCleanSecs = 0
+            when {
+                abrBitrate > ABR_FLOOR ->
+                    applyBitrate((abrBitrate / 2).coerceAtLeast(ABR_FLOOR))
+                abrDivisor < 3 -> applyDivisor(abrDivisor + 1)
+                // Floor everywhere and still choking: the link is smaller
+                // than the minimum stream; keep limping, nothing left to shed.
+            }
+        } else if (depth <= 2) {
+            if (++abrCleanSecs >= ABR_CLEAN_SECS) {
+                abrCleanSecs = 0
+                when {
+                    abrDivisor > 1 -> applyDivisor(abrDivisor - 1)
+                    abrBitrate < VIDEO_BITRATE ->
+                        applyBitrate((abrBitrate * 5 / 4).coerceAtMost(VIDEO_BITRATE))
+                }
+            }
+        } else {
+            abrCleanSecs = 0
+        }
+    }
+
+    private fun applyBitrate(b: Int) {
+        abrBitrate = b
+        try {
+            encoder?.setParameters(android.os.Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, b)
+            })
+            Log.i(TAG, "abr: bitrate -> ${b / 1000}k")
+        } catch (e: Exception) {
+            // Encoder rejects live bitrate changes: ABR can only log it.
+            Log.w(TAG, "abr: bitrate change rejected: ${e.message}")
+        }
+    }
+
+    private fun applyDivisor(n: Int) {
+        abrDivisor = n
+        glRotator?.setRenderDivisor(n)
+        Log.i(TAG, "abr: frame divisor -> $n (~${VIDEO_FPS / n}fps)")
     }
 
     // ---------------------------------------------------------------- camera
