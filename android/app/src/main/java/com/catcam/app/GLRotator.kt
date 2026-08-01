@@ -205,6 +205,58 @@ class GLRotator(
     @Volatile private var mirror = false
     @Volatile private var inWidth = outWidth
     @Volatile private var inHeight = outHeight
+    // Whether content arrives PRE-ROTATED by the stMatrix at rotate 0 (the
+    // measured SM-T220 behavior, lessons 21/24). Set by classification, no
+    // longer assumed.
+    @Volatile private var preRotated = true
+
+    // Orientation self-configuration. The stMatrix is per-HAL behavior that
+    // cannot be derived from docs (lesson 12): on the first frame of each
+    // config we CLASSIFY its linear part and pick the pipeline geometry.
+    //   PREROT family (90-degree stMatrix, e.g. Samsung SM-T220): the
+    //     content is already display-upright at rotate 0; keep the measured
+    //     config bit-identical (extra rotation 0, no mirror, swapped dims).
+    //   STANDARD family (plain V-flip stMatrix, e.g. emulator, most HALs):
+    //     apply the textbook rotation from sensorOrientation and display.
+    @Volatile private var classifyPending = false
+    @Volatile private var hintSensorDeg = 90
+    @Volatile private var hintDisplayDeg = 0
+    @Volatile private var hintFacingFront = true
+
+    /** Provide the facts for orientation classification; geometry is chosen
+     *  on the first frame after this call. */
+    fun setOrientationHints(sensorDeg: Int, displayDeg: Int, facingFront: Boolean) {
+        hintSensorDeg = sensorDeg
+        hintDisplayDeg = displayDeg
+        hintFacingFront = facingFront
+        classifyPending = true
+        logFrames = 3
+        accumValid = false
+    }
+
+    private fun classifyAndConfigure() {
+        // Linear 2x2 of the column-major 4x4: [m0 m4; m1 m5].
+        val a = stMatrix[0]; val c = stMatrix[4]
+        val b = stMatrix[1]; val d = stMatrix[5]
+        // Dominant-axis test: crop scales keep dominant entries >= ~0.5.
+        val rotated = Math.abs(a) < 0.5f && Math.abs(d) < 0.5f &&
+                      Math.abs(b) >= 0.5f && Math.abs(c) >= 0.5f
+        if (rotated) {
+            // PREROT: the measured SM-T220 path, unchanged.
+            rotateDeg = 0
+            mirror = false
+            preRotated = true
+        } else {
+            // STANDARD: V-flip-only (or identity) stMatrix; the buffer is in
+            // sensor orientation. Textbook upright rotation:
+            rotateDeg = (((hintSensorDeg - hintDisplayDeg) % 360) + 360) % 360
+            mirror = false
+            preRotated = false
+        }
+        Log.i(TAG, "orient: family=${if (preRotated) "PREROT" else "STANDARD"} " +
+            "L=[$a $c; $b $d] -> rot=$rotateDeg mirror=$mirror " +
+            "(sensor=$hintSensorDeg display=$hintDisplayDeg front=$hintFacingFront)")
+    }
 
     // Matrix instrumentation: dump stMatrix/texMatrix to logcat for the first
     // few frames after every config change. The stMatrix content is per-camera
@@ -347,6 +399,11 @@ class GLRotator(
 
         inputSurfaceTexture.updateTexImage()
         inputSurfaceTexture.getTransformMatrix(stMatrix)
+
+        if (classifyPending) {
+            classifyPending = false
+            classifyAndConfigure()
+        }
 
         // ABR shed: buffer consumed above, frame simply not encoded.
         frameCounter++
@@ -650,8 +707,8 @@ class GLRotator(
             val contentW: Float
             val contentH: Float
             if (rotateDeg == 0 || rotateDeg == 180) {
-                if (rotateDeg == 0) {
-                    contentW = inHeight.toFloat()   // stMatrix pre-rotated (measured)
+                if (rotateDeg == 0 && preRotated) {
+                    contentW = inHeight.toFloat()   // stMatrix pre-rotated (measured, PREROT family)
                     contentH = inWidth.toFloat()
                 } else {
                     contentW = inWidth.toFloat()

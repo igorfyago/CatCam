@@ -297,6 +297,12 @@ class StreamerService : Service() {
     private var captureSession: CameraCaptureSession? = null
     private var reqBuilder: CaptureRequest.Builder? = null
     private var activeArray: android.graphics.Rect? = null
+    // Capability gates read at camera open: never SET what the HAL does not
+    // LIST (unlisted values are no-video or a crash on stricter devices).
+    private var availNrModes: IntArray? = null
+    private var availEdgeModes: IntArray? = null
+    private var availAeRanges: Array<Range<Int>>? = null
+    private var chosenChars: CameraCharacteristics? = null
     private var encoder: MediaCodec? = null
     @Volatile private var lastConfig: ByteArray? = null
     private var encWidth = VIDEO_WIDTH
@@ -378,12 +384,17 @@ class StreamerService : Service() {
         // sharpening gives high-ISO noise dots hard outlines the encoder
         // then spends bits preserving. Day = daylight detail: light NR keeps
         // texture, EDGE FAST was part of the original working balance.
-        req.set(CaptureRequest.NOISE_REDUCTION_MODE,
-            if (dayMode) CaptureRequest.NOISE_REDUCTION_MODE_FAST
-            else CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-        req.set(CaptureRequest.EDGE_MODE,
-            if (dayMode) CaptureRequest.EDGE_MODE_FAST
-            else CaptureRequest.EDGE_MODE_OFF)
+        // Both are set ONLY when this HAL lists the mode (OFF in particular
+        // is often absent on LIMITED-tier devices); otherwise the HAL keeps
+        // its default, which beats no video at all.
+        val nr = if (dayMode) CaptureRequest.NOISE_REDUCTION_MODE_FAST
+                 else CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+        if (availNrModes?.contains(nr) == true)
+            req.set(CaptureRequest.NOISE_REDUCTION_MODE, nr)
+        val edge = if (dayMode) CaptureRequest.EDGE_MODE_FAST
+                   else CaptureRequest.EDGE_MODE_OFF
+        if (availEdgeModes?.contains(edge) == true)
+            req.set(CaptureRequest.EDGE_MODE, edge)
         Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep")
     }
 
@@ -616,6 +627,10 @@ class StreamerService : Service() {
         sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         usingFrontCamera = wantedFacing == CameraCharacteristics.LENS_FACING_FRONT
         activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        availNrModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+        availEdgeModes = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)
+        availAeRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        chosenChars = chars
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED) {
@@ -636,13 +651,44 @@ class StreamerService : Service() {
         }, cameraHandler)
     }
 
+    // Choose a capture size this camera LISTS (an unlisted size is no-video
+    // or an exception on stricter HALs). Preference order keeps the measured
+    // SM-T220 modes exactly: front = 1600x1200 if listed, else the largest
+    // 4:3 near 2MP; back = 1280x720 if listed, else the largest 16:9 up to
+    // 1080p-ish; last resort = the largest listed size around 2MP.
+    private fun pickCaptureSize(front: Boolean): Pair<Int, Int> {
+        val sizes = chosenChars
+            ?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+        if (sizes.isNullOrEmpty()) return VIDEO_WIDTH to VIDEO_HEIGHT
+        val exact = if (front) sizes.firstOrNull { it.width == 1600 && it.height == 1200 }
+                    else sizes.firstOrNull { it.width == VIDEO_WIDTH && it.height == VIDEO_HEIGHT }
+        if (exact != null) return exact.width to exact.height
+        val wantRatio = if (front) 4f / 3f else 16f / 9f
+        val match = sizes.filter {
+            Math.abs(it.width.toFloat() / it.height - wantRatio) < 0.05f &&
+            it.width * it.height <= 2_100_000
+        }.maxByOrNull { it.width * it.height }
+        val pick = match
+            ?: sizes.filter { it.width * it.height <= 2_200_000 }.maxByOrNull { it.width * it.height }
+            ?: sizes.minByOrNull { it.width * it.height }!!
+        Log.i(TAG, "capture size negotiated: ${pick.width}x${pick.height} (front=$front)")
+        return pick.width to pick.height
+    }
+
     private fun startEncoderAndSession(device: CameraDevice) {
         try {
-            // Decide output orientation from how the tablet is currently held.
-            // Portrait hold -> encode 720x1280 (video itself rotated via GLRotator).
+            // Decide output orientation from how the device is currently held,
+            // by the display's ACTUAL shape. The old ROTATION_0-means-portrait
+            // shortcut was only true on portrait-natural hardware; a
+            // landscape-natural tablet (Pixel Tablet, most 10-inch devices)
+            // reports ROTATION_0 while lying sideways.
             val dm = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
-            val dispRot = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
-            val heldPortrait = dispRot == Surface.ROTATION_0 || dispRot == Surface.ROTATION_180
+            val disp = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+            val dispRot = disp?.rotation ?: Surface.ROTATION_0
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION") disp?.getRealMetrics(metrics)
+            val heldPortrait = metrics.heightPixels >= metrics.widthPixels
 
             encWidth = if (heldPortrait) 720 else 1280
             encHeight = if (heldPortrait) 1280 else 720
@@ -699,27 +745,50 @@ class StreamerService : Service() {
                 Log.w(TAG, "High profile rejected (${e.message}), using encoder default")
                 try { enc.release() } catch (_: Exception) {}
                 enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                enc.configure(makeFormat(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                try {
+                    enc.configure(makeFormat(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                } catch (e2: Exception) {
+                    // Third rung: some vendor encoders reject VBR or the
+                    // quality keys wholesale. Baseline keys only, which the
+                    // CDD guarantees for an AVC encoder.
+                    Log.w(TAG, "Tuned format rejected (${e2.message}), using minimal format")
+                    try { enc.release() } catch (_: Exception) {}
+                    enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    val minimal = MediaFormat.createVideoFormat(
+                        MediaFormat.MIMETYPE_VIDEO_AVC, encWidth, encHeight).apply {
+                        setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                        setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FPS)
+                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_IFRAME_SEC)
+                    }
+                    enc.configure(minimal, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                }
             }
             val codecInput: Surface = enc.createInputSurface()
             enc.start()
             encoder = enc
 
-            // GL rotation pipeline camera->encoder. Needed whenever portrait
-            // even at rotateDeg 0: handles aspect-crop into 720x1280 + mirror.
-            // Front cam: request the FULL 4:3 sensor (1600x1200; the 16:9
-            // 1280x720 we used to ask for is not even a native mode, the HAL
-            // synthesized it by discarding sensor rows). GLRotator center-crops
-            // portrait 9:16 from the full array, so the encoder's 720x1280 is
-            // built by DOWNSCALING real detail (plus mild supersampling
-            // denoise) instead of enlarging a pre-cropped feed. Back cam keeps
-            // 1280x720 (cat duty, untouched tonight).
-            val capW = if (usingFrontCamera) 1600 else VIDEO_WIDTH
-            val capH = if (usingFrontCamera) 1200 else VIDEO_HEIGHT
+            // GL rotation pipeline camera->encoder. The capture size is
+            // NEGOTIATED against what this camera actually lists (an unlisted
+            // size is no-video or an exception on stricter HALs): front
+            // prefers the full 4:3 sensor near 2MP (real detail downscaled
+            // beats a pre-cropped feed, measured), back prefers 16:9 720p.
+            // On the SM-T220 this resolves to the exact previous values
+            // (1600x1200 front, 1280x720 back).
+            val (capW, capH) = pickCaptureSize(usingFrontCamera)
             val captureTarget: Surface = if (heldPortrait) {
                 val rot = GLRotator(codecInput, encWidth, encHeight)
                 rot.setInputBufferSize(capW, capH)
                 rot.setTransform(rotateDeg, mirror = mirrorFrame)
+                // Orientation is classified from the live stMatrix on the
+                // first frame (PREROT keeps the measured SM-T220 geometry;
+                // STANDARD derives the textbook rotation).
+                val dispDeg = when (dispRot) {
+                    Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270; else -> 0
+                }
+                rot.setOrientationHints(sensorOrientation, dispDeg, usingFrontCamera)
                 rot.inputSurfaceTexture.setOnFrameAvailableListener(
                     { rot.renderFrame() }, cameraHandler)
                 glRotator = rot
@@ -757,8 +826,14 @@ class StreamerService : Service() {
                             // Front = face calls: floor 24, near-smooth motion,
                             // modestly darker. Back = cat duty: floor 15, max
                             // brightness, judder irrelevant for a sleeping cat.
-                            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                Range(if (usingFrontCamera) 24 else 15, VIDEO_FPS))
+                            // Clamped to the ranges this HAL actually lists
+                            // (on the SM-T220 both wanted ranges are listed,
+                            // so behavior is unchanged there).
+                            val wanted = Range(if (usingFrontCamera) 24 else 15, VIDEO_FPS)
+                            val ae = availAeRanges?.minByOrNull { r ->
+                                Math.abs(r.lower - wanted.lower) * 2 + Math.abs(r.upper - wanted.upper)
+                            } ?: wanted
+                            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, ae)
                         }
                         applyTuningToRequest(req)
                         reqBuilder = req
