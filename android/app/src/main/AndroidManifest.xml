@@ -18,8 +18,11 @@
         android:theme="@style/Theme.CatCam"
         android:allowBackup="false">
 
+        <!-- singleTop: tray/camctl intent actions (UI_START/UI_STOP/UI_FLIP)
+             land in onNewIntent instead of stacking new instances. -->
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

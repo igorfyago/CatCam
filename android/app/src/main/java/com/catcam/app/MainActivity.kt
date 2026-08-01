@@ -3,6 +3,7 @@ package com.catcam.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.net.Uri
@@ -14,17 +15,36 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.Surface
 import android.view.TextureView
-import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Control surface: live preview (only while app is in foreground), status,
- * Start/Stop, front/back flip. Streaming itself lives in StreamerService.
+ * Control surface, camera-app style: full-bleed preview, controls floating
+ * over the video. State is never a word that can lie about what you see:
+ * the preview shows the live camera, the shutter is a white circle (idle)
+ * or a red square (live), the status pill's color is the connection state,
+ * and Day/Night is a segmented pair with the active side highlighted.
+ * Streaming itself lives in StreamerService.
+ *
+ * Remote control (tray/camctl) drives the same handlers via intent actions
+ * UI_START / UI_STOP / UI_FLIP instead of tapping screen coordinates.
  */
 class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
+
+    companion object {
+        const val ACTION_UI_START = "com.catcam.app.UI_START"
+        const val ACTION_UI_STOP = "com.catcam.app.UI_STOP"
+        const val ACTION_UI_FLIP = "com.catcam.app.UI_FLIP"
+
+        private const val COLOR_LIVE = 0xFFE53935.toInt()   // red: streaming, PC receiving
+        private const val COLOR_WAIT = 0xFFDD9C10.toInt()   // amber: streaming, no PC yet
+        private const val COLOR_IDLE = 0x66000000           // translucent: idle
+        private const val COLOR_SEG_ON = 0xFFFFFFFF.toInt()
+        private const val COLOR_SEG_OFF = 0x00FFFFFF
+    }
 
     private val perms = mutableListOf(
         Manifest.permission.CAMERA,
@@ -33,19 +53,22 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }.toTypedArray()
 
-    private lateinit var status: TextView
-    private lateinit var startBtn: Button
-    private lateinit var stopBtn: Button
-    private lateinit var flipBtn: Button
-    private lateinit var zoomInBtn: Button
-    private lateinit var zoomOutBtn: Button
+    private lateinit var statusPill: TextView
+    private lateinit var shutter: android.widget.FrameLayout
+    private lateinit var shutterInner: android.view.View
+    private lateinit var flipBtn: ImageView
+    private lateinit var zoomInBtn: TextView
+    private lateinit var zoomOutBtn: TextView
     private lateinit var zoomLabel: TextView
-    private lateinit var toneCoolBtn: Button
-    private lateinit var toneWarmBtn: Button
+    private lateinit var toneCoolBtn: TextView
+    private lateinit var toneWarmBtn: TextView
     private lateinit var toneLabel: TextView
-    private lateinit var dayNightBtn: Button
+    private lateinit var segDay: TextView
+    private lateinit var segNight: TextView
     private lateinit var audioBar: android.widget.ProgressBar
     private lateinit var preview: TextureView
+
+    private var shutterLive = false
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -60,12 +83,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private val ticker = object : Runnable {
         override fun run() {
-            val streaming = StreamerService.statusText != "Idle"
-            status.text = "${StreamerService.statusText}\n" +
-                (if (StreamerService.clientConnected) "PC connected" else "No PC connected")
-            startBtn.isEnabled = !streaming
-            stopBtn.isEnabled = streaming
-            flipBtn.text = if (StreamerService.preferFrontCamera) "Front" else "Back"
+            updateStatusPill()
+            updateShutter()
             updateZoomLabel()
             updateTuningLabels()
             if (StreamerService.glPreviewActive) {
@@ -74,6 +93,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 preview.setTransform(Matrix())
             } else {
                 applyPreviewTransform()
+            }
+            // Camera switch finished: un-dim the stale-frame cover.
+            if (StreamerService.statusText.startsWith("Streaming") && preview.alpha < 1f) {
+                preview.animate().alpha(1f).setDuration(200).start()
             }
             handler.postDelayed(this, 500)
         }
@@ -84,57 +107,172 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         setContentView(R.layout.activity_main)
         // Foreground belt for the service's SCREEN_BRIGHT wake lock.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        status = findViewById(R.id.status)
-        startBtn = findViewById(R.id.start)
-        stopBtn = findViewById(R.id.stop)
-        flipBtn = findViewById(R.id.flip)
+        // Full-bleed: video draws behind transparent system bars; the control
+        // stack and status pill are pushed back inside by the real insets
+        // (a fixed margin under-shoots on devices with taller nav bars).
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        val root = findViewById<android.widget.FrameLayout>(R.id.root)
+        val stack = findViewById<android.widget.LinearLayout>(R.id.control_stack)
+        val d = resources.displayMetrics.density
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            (stack.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin =
+                (26 * d).toInt() + bars.bottom
+            (findViewById<TextView>(R.id.status_pill).layoutParams
+                as android.widget.FrameLayout.LayoutParams).topMargin = (12 * d).toInt() + bars.top
+            root.requestLayout()
+            insets
+        }
+
+        statusPill = findViewById(R.id.status_pill)
+        shutter = findViewById(R.id.shutter)
+        shutterInner = findViewById(R.id.shutter_inner)
+        flipBtn = findViewById(R.id.btn_flip)
         zoomOutBtn = findViewById(R.id.zoom_out)
         zoomInBtn = findViewById(R.id.zoom_in)
         zoomLabel = findViewById(R.id.zoom_label)
         toneCoolBtn = findViewById(R.id.tone_cool)
         toneWarmBtn = findViewById(R.id.tone_warm)
         toneLabel = findViewById(R.id.tone_label)
-        dayNightBtn = findViewById(R.id.day_night)
+        segDay = findViewById(R.id.seg_day)
+        segNight = findViewById(R.id.seg_night)
         audioBar = findViewById(R.id.audio_level)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
         StreamerService.loadCameraPref(this)
-        updateZoomLabel()
-        updateTuningLabels()
 
-        startBtn.setOnClickListener {
-            if (hasPerms()) startStreaming() else
-                ActivityCompat.requestPermissions(this, perms, 1)
+        shutter.setOnClickListener {
+            if (StreamerService.statusText != "Idle") stopStreaming() else startOrAskPerms()
         }
-        stopBtn.setOnClickListener {
-            startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
-        }
-        flipBtn.setOnClickListener {
-            StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
-            StreamerService.saveCameraPref(this)
-            // Each camera keeps its own zoom and tone (calls vs cat duty want
-            // different framing): pull the new camera's saved values.
-            StreamerService.loadCameraPref(this)
-            updateZoomLabel()
-            updateTuningLabels()
-            if (StreamerService.statusText != "Idle") {
-                startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
-                handler.postDelayed({ startStreaming() }, 800)
-            }
-        }
+        flipBtn.setOnClickListener { flipCamera() }
         zoomOutBtn.setOnClickListener { stepZoom(1f / StreamerService.ZOOM_STEP) }
         zoomInBtn.setOnClickListener { stepZoom(StreamerService.ZOOM_STEP) }
         toneCoolBtn.setOnClickListener { stepTone(-1) }
         toneWarmBtn.setOnClickListener { stepTone(+1) }
-        dayNightBtn.setOnClickListener {
-            StreamerService.setDayMode(this, !StreamerService.dayMode)
-            updateTuningLabels()
-        }
+        segDay.setOnClickListener { setDay(true) }
+        segNight.setOnClickListener { setDay(false) }
+
+        updateZoomLabel()
+        updateTuningLabels()
+        updateStatusPill()
+        updateShutter()
 
         requestBatteryExemption()
         handler.post(ticker)
         handler.post(levelTicker)
+        handleUiAction(intent)
     }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleUiAction(intent)
+    }
+
+    // Tray/camctl entry: same handlers as the on-screen controls, so the UI
+    // can never disagree with what remote control did. Idempotent: START
+    // while streaming and STOP while idle are no-ops.
+    private fun handleUiAction(intent: Intent?) {
+        when (intent?.action) {
+            ACTION_UI_START -> if (StreamerService.statusText == "Idle") startOrAskPerms()
+            ACTION_UI_STOP -> if (StreamerService.statusText != "Idle") stopStreaming()
+            ACTION_UI_FLIP -> flipCamera()
+        }
+    }
+
+    // ------------------------------------------------------------- actions
+
+    private fun startOrAskPerms() {
+        if (hasPerms()) startStreaming() else
+            ActivityCompat.requestPermissions(this, perms, 1)
+    }
+
+    private fun startStreaming() {
+        val i = Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_START)
+        ContextCompat.startForegroundService(this, i)
+    }
+
+    private fun stopStreaming() {
+        startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
+    }
+
+    private fun flipCamera() {
+        StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
+        StreamerService.saveCameraPref(this)
+        // Each camera keeps its own zoom and tone (calls vs cat duty want
+        // different framing): pull the new camera's saved values.
+        StreamerService.loadCameraPref(this)
+        updateZoomLabel()
+        updateTuningLabels()
+        if (StreamerService.statusText != "Idle") {
+            // Dim the last frame of the OLD camera while the switch runs, so
+            // the preview never quietly claims to be the new camera. The
+            // ticker restores alpha once the new camera is streaming.
+            preview.animate().alpha(0.3f).setDuration(150).start()
+            stopStreaming()
+            handler.postDelayed({ startStreaming() }, 800)
+        }
+    }
+
+    // Zoom is applied at the camera HAL, so the stream to the PC and the
+    // preview change together; the value persists per camera.
+    private fun stepZoom(factor: Float) {
+        StreamerService.setZoom(this, StreamerService.zoomRatio * factor)
+        updateZoomLabel()
+    }
+
+    private fun stepTone(delta: Int) {
+        StreamerService.setTone(this, StreamerService.toneStep + delta)
+        updateTuningLabels()
+    }
+
+    private fun setDay(on: Boolean) {
+        StreamerService.setDayMode(this, on)
+        updateTuningLabels()
+    }
+
+    // ------------------------------------------------------------- state UI
+
+    private fun updateStatusPill() {
+        val s = StreamerService.statusText
+        val (text, color) = when {
+            s.startsWith("Streaming") && StreamerService.clientConnected -> "LIVE" to COLOR_LIVE
+            s == "Idle" -> "Idle" to COLOR_IDLE
+            s.startsWith("Waiting") || s.startsWith("Streaming") -> "Waiting for PC" to COLOR_WAIT
+            else -> s to COLOR_WAIT   // error strings surface as-is
+        }
+        statusPill.text = text
+        statusPill.backgroundTintList = ColorStateList.valueOf(color)
+    }
+
+    private fun updateShutter() {
+        val live = StreamerService.statusText != "Idle"
+        if (live == shutterLive) return
+        shutterLive = live
+        shutterInner.setBackgroundResource(if (live) R.drawable.shutter_live else R.drawable.shutter_idle)
+        val size = (resources.displayMetrics.density * (if (live) 30 else 60)).toInt()
+        shutterInner.layoutParams = shutterInner.layoutParams.apply { width = size; height = size }
+    }
+
+    private fun updateZoomLabel() {
+        zoomLabel.text = String.format(java.util.Locale.US, "%.1f×", StreamerService.zoomRatio)
+    }
+
+    private fun updateTuningLabels() {
+        val t = StreamerService.toneStep
+        toneLabel.text = if (t > 0) "+$t" else "$t"
+        val day = StreamerService.dayMode
+        // Segmented pair: both options visible, the active one highlighted.
+        segDay.setBackgroundResource(R.drawable.pill_solid)
+        segDay.backgroundTintList = ColorStateList.valueOf(if (day) COLOR_SEG_ON else COLOR_SEG_OFF)
+        segDay.setTextColor(if (day) 0xFF000000.toInt() else 0xB3FFFFFF.toInt())
+        segNight.setBackgroundResource(R.drawable.pill_solid)
+        segNight.backgroundTintList = ColorStateList.valueOf(if (!day) COLOR_SEG_ON else COLOR_SEG_OFF)
+        segNight.setTextColor(if (!day) 0xFF000000.toInt() else 0xB3FFFFFF.toInt())
+    }
+
+    // ------------------------------------------------------------- plumbing
 
     private fun hasPerms() = perms.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -145,34 +283,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (hasPerms()) startStreaming()
-    }
-
-    private fun startStreaming() {
-        val i = Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_START)
-        ContextCompat.startForegroundService(this, i)
-    }
-
-    // Zoom is applied at the camera HAL, so the stream to the PC and the
-    // preview change together; the value persists per camera.
-    private fun stepZoom(factor: Float) {
-        StreamerService.setZoom(this, StreamerService.zoomRatio * factor)
-        updateZoomLabel()
-    }
-
-    private fun updateZoomLabel() {
-        zoomLabel.text = String.format(java.util.Locale.US, "%.1f×", StreamerService.zoomRatio)
-    }
-
-    private fun stepTone(delta: Int) {
-        StreamerService.setTone(this, StreamerService.toneStep + delta)
-        updateTuningLabels()
-    }
-
-    private fun updateTuningLabels() {
-        val t = StreamerService.toneStep
-        toneLabel.text = if (t > 0) "+$t" else "$t"
-        // Like Flip, the button names the CURRENT state.
-        dayNightBtn.text = if (StreamerService.dayMode) "Day" else "Night"
     }
 
     private fun requestBatteryExemption() {
@@ -192,7 +302,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         // Direct/landscape path: the preview is a HAL target, which can only
         // join by rebuilding the capture session.
         if (StreamerService.statusText != "Idle") {
-            startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
+            stopStreaming()
             handler.postDelayed({ startStreaming() }, 800)
         }
     }
@@ -207,8 +317,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
 
-    // Rotate the preview so it matches how the tablet is held, and mirror the
-    // front camera so it behaves like a mirror (natural for self-view).
+    // Rotate the preview so it matches how the tablet is held (direct/
+    // landscape path only; the GL preview letterboxes itself).
     private fun applyPreviewTransform() {
         val w = preview.width.toFloat(); val h = preview.height.toFloat()
         if (w == 0f || h == 0f) return
@@ -219,20 +329,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180
             Surface.ROTATION_270 -> 270; else -> 0
         }
-        // Degrees the sensor image must rotate to be upright.
-        val sensorDeg = StreamerService.sensorOrientation
-        // Empirical on SM-T220 front cam: raw sensor output is already display-upright
-        // in portrait -> no rotation needed. Keep the formula for other devices:
-        // val rotateDeg = ((sensorDeg - displayDeg) + 360) % 360
+        // Empirical on SM-T220 (lesson 12): raw sensor output is already
+        // display-upright in portrait, so rotate by display only.
         val rotateDeg = displayDeg
-
-        // Content aspect AFTER rotation (the encoded frame is 1280x720 landscape)
         val swapped = rotateDeg == 90 || rotateDeg == 270
         val contentW = if (swapped) 720f else 1280f
         val contentH = 720f
-        // Uniform center-crop: single scale factor, preserves proportions exactly
         val scale = kotlin.math.max(w / contentW, h / contentH)
-
         val m = Matrix()
         m.postRotate(rotateDeg.toFloat(), w / 2, h / 2)
         m.postScale(scale, scale, w / 2, h / 2)

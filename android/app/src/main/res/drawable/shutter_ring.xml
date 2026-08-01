@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Outer ring of the record button, camera-app idiom. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <stroke android:width="3dp" android:color="#FFFFFFFF" />
+    <solid android:color="#26000000" />
+</shape>

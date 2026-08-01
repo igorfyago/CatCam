@@ -1,132 +1,240 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:orientation="vertical"
-    android:gravity="center_horizontal"
-    android:padding="20dp"
+<!-- Camera-app layout: full-bleed preview, controls float over the video.
+     State is never a word that can lie: the preview shows the live camera,
+     the shutter shows idle (white circle) vs live (red square), the status
+     pill's color IS the connection state, and Day/Night is a segmented pair
+     with the active side highlighted. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
 
+    <!-- Lesson 11: TextureView must not have android:background. -->
     <TextureView
         android:id="@+id/preview"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginBottom="8dp" />
-
-    <!-- Mic level: one moving bar = sound is flowing. No numbers on purpose. -->
-    <ProgressBar
-        android:id="@+id/audio_level"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:max="100"
-        android:progress="0"
-        android:layout_marginBottom="8dp"
-        android:layout_width="match_parent"
-        android:layout_height="6dp" />
+        android:layout_height="match_parent" />
 
     <TextView
-        android:id="@+id/status"
+        android:id="@+id/status_pill"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="44dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:background="@drawable/pill_solid"
         android:text="Idle"
-        android:textSize="16sp"
-        android:gravity="center"
-        android:layout_marginBottom="16dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="13sp"
+        android:fontFamily="sans-serif-medium"
+        android:letterSpacing="0.06"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 
-    <!-- Zoom row sits ABOVE the Start/Stop/Flip row on purpose: that row must
-         stay the last child (flush to the bottom) or camctl.bat's measured
-         tap coordinates go stale and the tray taps thin air. -->
     <LinearLayout
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_marginBottom="8dp"
-        android:layout_width="wrap_content"
+        android:id="@+id/control_stack"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="26dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content">
 
-        <Button
-            android:id="@+id/zoom_out"
-            android:text="−"
-            android:layout_marginEnd="8dp"
-            android:layout_width="72dp"
-            android:layout_height="wrap_content" />
+        <!-- Tone + Day/Night -->
+        <LinearLayout
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
 
-        <TextView
-            android:id="@+id/zoom_label"
-            android:text="1.0×"
-            android:textSize="18sp"
-            android:gravity="center"
-            android:layout_width="72dp"
-            android:layout_height="wrap_content" />
+            <LinearLayout
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/pill_scrim"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content">
 
-        <Button
-            android:id="@+id/zoom_in"
-            android:text="+"
-            android:layout_marginStart="8dp"
-            android:layout_width="72dp"
-            android:layout_height="wrap_content" />
+                <TextView
+                    android:id="@+id/tone_cool"
+                    android:text="Cool"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingBottom="7dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/tone_label"
+                    android:text="0"
+                    android:textColor="#B3FFFFFF"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:gravity="center"
+                    android:minWidth="30dp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/tone_warm"
+                    android:text="Warm"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingBottom="7dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <Space
+                android:layout_width="12dp"
+                android:layout_height="1dp" />
+
+            <LinearLayout
+                android:orientation="horizontal"
+                android:background="@drawable/pill_scrim"
+                android:padding="4dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content">
+
+                <TextView
+                    android:id="@+id/seg_day"
+                    android:text="Day"
+                    android:textColor="#B3FFFFFF"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/seg_night"
+                    android:text="Night"
+                    android:textColor="#B3FFFFFF"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="14dp" />
+
+        <!-- Zoom -->
+        <LinearLayout
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <TextView
+                android:id="@+id/zoom_out"
+                android:text="−"
+                android:textColor="#FFFFFFFF"
+                android:textSize="20sp"
+                android:gravity="center"
+                android:background="@drawable/circle_scrim"
+                android:layout_width="44dp"
+                android:layout_height="44dp" />
+
+            <TextView
+                android:id="@+id/zoom_label"
+                android:text="1.0×"
+                android:textColor="#FFFFFFFF"
+                android:textSize="14sp"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:background="@drawable/pill_scrim"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:layout_marginStart="14dp"
+                android:layout_marginEnd="14dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/zoom_in"
+                android:text="+"
+                android:textColor="#FFFFFFFF"
+                android:textSize="20sp"
+                android:gravity="center"
+                android:background="@drawable/circle_scrim"
+                android:layout_width="44dp"
+                android:layout_height="44dp" />
+        </LinearLayout>
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="14dp" />
+
+        <ProgressBar
+            android:id="@+id/audio_level"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:progressDrawable="@drawable/mic_progress"
+            android:max="100"
+            android:progress="0"
+            android:layout_width="170dp"
+            android:layout_height="4dp" />
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="16dp" />
+
+        <!-- Shutter row: flip on the left, record button center. -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="80dp">
+
+            <ImageView
+                android:id="@+id/btn_flip"
+                android:src="@drawable/ic_flip"
+                android:background="@drawable/circle_scrim"
+                android:scaleType="center"
+                android:contentDescription="Switch camera"
+                android:layout_gravity="start|center_vertical"
+                android:layout_marginStart="64dp"
+                android:layout_width="52dp"
+                android:layout_height="52dp" />
+
+            <FrameLayout
+                android:id="@+id/shutter"
+                android:background="@drawable/shutter_ring"
+                android:layout_gravity="center"
+                android:layout_width="76dp"
+                android:layout_height="76dp">
+
+                <View
+                    android:id="@+id/shutter_inner"
+                    android:background="@drawable/shutter_idle"
+                    android:layout_gravity="center"
+                    android:layout_width="60dp"
+                    android:layout_height="60dp" />
+            </FrameLayout>
+        </FrameLayout>
     </LinearLayout>
-
-    <LinearLayout
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_marginBottom="8dp"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content">
-
-        <Button
-            android:id="@+id/tone_cool"
-            android:text="Cool"
-            android:layout_marginEnd="8dp"
-            android:layout_width="88dp"
-            android:layout_height="wrap_content" />
-
-        <TextView
-            android:id="@+id/tone_label"
-            android:text="0"
-            android:textSize="18sp"
-            android:gravity="center"
-            android:layout_width="48dp"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/tone_warm"
-            android:text="Warm"
-            android:layout_marginStart="8dp"
-            android:layout_width="88dp"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/day_night"
-            android:text="Night"
-            android:layout_marginStart="24dp"
-            android:layout_width="96dp"
-            android:layout_height="wrap_content" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content">
-
-        <Button
-            android:id="@+id/start"
-            android:text="Start"
-            android:layout_marginEnd="8dp"
-            android:layout_width="120dp"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/stop"
-            android:text="Stop"
-            android:enabled="false"
-            android:layout_marginEnd="8dp"
-            android:layout_width="120dp"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/flip"
-            android:text="Front"
-            android:layout_width="120dp"
-            android:layout_height="wrap_content" />
-    </LinearLayout>
-</LinearLayout>
+</FrameLayout>

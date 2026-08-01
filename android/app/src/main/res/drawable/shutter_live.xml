@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Live inner: red rounded square = recording, tap to stop. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FFFF3B30" />
+    <corners android:radius="10dp" />
+</shape>
