@@ -42,6 +42,21 @@
     background: var(--orange); color: #fff; font-weight: 700; font-size: 14px;
     align-items: center; justify-content: center; margin-bottom: 10px;
   }
+  .features { margin: 0 0 40px; }
+  .features h2 { font-size: 22px; margin-bottom: 14px; text-align: center; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .feat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px;
+  }
+  .feat b { display: block; font-size: 15px; margin-bottom: 4px; }
+  .feat span { color: var(--soft); font-size: 14px; }
+  .feat .tag {
+    display: inline-block; background: var(--orange); color: #fff;
+    font-size: 11px; font-weight: 700; border-radius: 999px;
+    padding: 2px 10px; margin-bottom: 8px; letter-spacing: .04em;
+  }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
   .privacy {
     background: var(--card); border: 1px solid var(--line); border-radius: 16px;
     padding: 24px; margin-bottom: 40px;
@@ -62,7 +77,7 @@
   <header>
     <img src="logo512.png" alt="CatCam mascot: an orange cat hugging a tablet">
     <h1>CatCam</h1>
-    <p class="tagline">Turn a spare tablet into your PC's webcam.</p>
+    <p class="tagline">Turn a spare tablet into your PC's webcam. Over Wi-Fi or USB.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-windows-x64.zip">Download for Windows</a>
       <a class="btn btn-secondary" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk">Get the tablet app</a>
@@ -85,6 +100,47 @@
       <span class="num">3</span>
       <b>They find each other</b>
       <span>Same network is enough. "CatCam" shows up as a camera in Teams, Zoom and everything else.</span>
+    </div>
+  </div>
+
+  <div class="features">
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="feat">
+        <span class="tag">WI-FI OR USB</span>
+        <b>Connect either way</b>
+        <span>Stream cable-free over your home network, or plug in a USB cable
+        for a wired link. Switch between the two from the tablet or from the
+        PC, any time, mid-stream.</span>
+      </div>
+      <div class="feat">
+        <b>They find each other</b>
+        <span>No IP addresses, no pairing codes. The tablet announces itself
+        on your network and the PC connects on its own.</span>
+      </div>
+      <div class="feat">
+        <b>A preview you can trust</b>
+        <span>The tablet screen shows exactly the frame your PC receives,
+        the same zoom, colors and framing your call sees.</span>
+      </div>
+      <div class="feat">
+        <b>Zoom, tone, Day &amp; Night</b>
+        <span>Frame the shot with zoom buttons, nudge the color warmer or
+        cooler, and flip to a Night mode tuned for dark rooms. Each camera
+        remembers its own settings.</span>
+      </div>
+      <div class="feat">
+        <b>Front or back camera</b>
+        <span>Switch cameras with one tap on the tablet, or remotely from
+        the PC's tray menu, which also has start, stop and a live preview
+        window.</span>
+      </div>
+      <div class="feat">
+        <b>Sound included</b>
+        <span>The tablet's microphone streams alongside the video, with a
+        live level meter. On a weak network the video adapts its quality
+        instead of freezing.</span>
+      </div>
     </div>
   </div>
 
