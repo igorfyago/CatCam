@@ -14,7 +14,7 @@ set KMLIB=%KIT%\Lib\%VER%\km\x64
 set UCRTLIB=%KIT%\Lib\%VER%\ucrt\x64
 set UMLIB=%KIT%\Lib\%VER%\um\x64
 
-cd /d C:\Users\b4rru\catcam\audio\src
+cd /d %~dp0src
 if exist out del /q out\*.obj 2>nul
 mkdir out 2>nul
 
