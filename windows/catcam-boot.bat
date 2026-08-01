@@ -8,6 +8,9 @@ call "%~dp0catcam-env.bat"
 set ADB=%CATCAM_ADB%
 set SER=%SERFLAG%
 
+REM No adb installed (Wi-Fi-only setup): nothing to wait for or forward.
+if not exist "%ADB%" goto start
+
 REM Wait up to ~90s for the tablet (USB enumeration after boot takes a while).
 set /a tries=0
 :wait
@@ -20,4 +23,5 @@ goto wait
 
 :ready
 "%ADB%" %SER% forward tcp:9000 tcp:9000 >nul 2>&1
+:start
 start "" CatCamTray.exe
