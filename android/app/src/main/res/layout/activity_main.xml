@@ -80,7 +80,7 @@
         <!-- Onboarding: only while waiting and a PC has never connected. -->
         <TextView
             android:id="@+id/get_pc_hint"
-            android:text="PC app: catcam.b4rruf3t.com"
+            android:text="PC app: catcam.app"
             android:textColor="#B3FFFFFF"
             android:textSize="12sp"
             android:fontFamily="sans-serif-medium"
