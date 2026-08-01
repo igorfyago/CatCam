@@ -16,22 +16,67 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/status_pill"
+    <LinearLayout
+        android:id="@+id/top_stack"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
         android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="44dp"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="7dp"
-        android:paddingBottom="7dp"
-        android:background="@drawable/pill_solid"
-        android:text="Idle"
-        android:textColor="#FFFFFFFF"
-        android:textSize="13sp"
-        android:fontFamily="sans-serif-medium"
-        android:letterSpacing="0.06"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content" />
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/status_pill"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+            android:background="@drawable/pill_solid"
+            android:text="Idle"
+            android:textColor="#FFFFFFFF"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.06"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <!-- Transport request; the pill above shows the ACTUAL transport
+             while live, so this can never silently lie. -->
+        <LinearLayout
+            android:orientation="horizontal"
+            android:background="@drawable/pill_scrim"
+            android:padding="4dp"
+            android:layout_marginTop="10dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <TextView
+                android:id="@+id/seg_usb"
+                android:text="USB"
+                android:textColor="#B3FFFFFF"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif-medium"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/seg_wifi"
+                android:text="Wi-Fi"
+                android:textColor="#B3FFFFFF"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif-medium"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/control_stack"

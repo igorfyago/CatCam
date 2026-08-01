@@ -108,6 +108,8 @@ class StreamerService : Service() {
         private const val KEY_TONE_FRONT = "tone_front"
         private const val KEY_TONE_BACK = "tone_back"
         private const val KEY_DAY_MODE = "day_mode"
+        private const val KEY_TRANSPORT_WIFI = "transport_wifi"
+        private const val KEY_TRANSPORT_GEN = "transport_gen"
 
         // Multiplicative per tap: even perceived steps across the whole range
         // (1x to this HAL's 10x in ~10 taps). Additive steps feel huge near 1x
@@ -143,6 +145,31 @@ class StreamerService : Service() {
         @Volatile var audioLevel = 0f
             private set
 
+        // Transport switch. The tablet only REQUESTS a transport: the PC
+        // does the connecting, so the request rides the beacon with a
+        // change counter and the tray applies it (last user action wins,
+        // tablet switch or tray menu). On every accepted connection the
+        // request snaps to the ACTUAL transport, so the UI can never claim
+        // USB while streaming over Wi-Fi.
+        @Volatile var transportWifi = false
+            private set
+        @Volatile private var transportGen = 0
+
+        // Actual transport of the current connection: loopback source =
+        // adb-forwarded USB, LAN source = Wi-Fi. null = no client.
+        @Volatile var clientViaWifi: Boolean? = null
+            private set
+
+        fun setTransport(ctx: Context, wifi: Boolean) {
+            if (wifi == transportWifi) return
+            transportWifi = wifi
+            transportGen += 1
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_TRANSPORT_WIFI, wifi)
+                .putInt(KEY_TRANSPORT_GEN, transportGen)
+                .apply()
+        }
+
         fun loadCameraPref(ctx: Context) {
             val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             preferFrontCamera = sp.getBoolean(KEY_PREFER_FRONT, true)
@@ -151,6 +178,8 @@ class StreamerService : Service() {
                 .coerceIn(1f, zoomMax)
             toneStep = sp.getInt(if (preferFrontCamera) KEY_TONE_FRONT else KEY_TONE_BACK, 0)
             dayMode = sp.getBoolean(KEY_DAY_MODE, false)
+            transportWifi = sp.getBoolean(KEY_TRANSPORT_WIFI, false)
+            transportGen = sp.getInt(KEY_TRANSPORT_GEN, 0)
         }
 
         // UI entry: clamp, persist for this camera, and push into the live
@@ -385,6 +414,16 @@ class StreamerService : Service() {
                     val client: Socket = server.accept()
                     client.tcpNoDelay = true
                     Log.i(TAG, "PC connected: ${client.inetAddress}")
+                    // Ground truth: loopback = adb-forwarded USB, LAN = Wi-Fi.
+                    val viaWifi = client.inetAddress?.isLoopbackAddress == false
+                    clientViaWifi = viaWifi
+                    // Snap the request switch to reality (bool only, no gen
+                    // bump: this is observation, not a user action).
+                    if (transportWifi != viaWifi) {
+                        transportWifi = viaWifi
+                        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                            .putBoolean(KEY_TRANSPORT_WIFI, viaWifi).apply()
+                    }
                     val o = DataOutputStream(client.getOutputStream())
                     sendQ.clear()
                     out = o
@@ -403,6 +442,7 @@ class StreamerService : Service() {
             } finally {
                 out = null
                 clientConnected = false
+                clientViaWifi = null
                 if (running.get()) statusText = "Waiting for PC on :$PORT"
             }
         }
@@ -793,8 +833,12 @@ class StreamerService : Service() {
         var sock: java.net.DatagramSocket? = null
         try {
             sock = java.net.DatagramSocket().apply { broadcast = true }
-            val payload = "CATCAM1 $PORT".toByteArray()
             while (running.get()) {
+                // Recomputed per send: the transport request rides along
+                // ("CATCAM1 <port> <usb|wifi> <gen>"; the gen counter lets
+                // the tray tell a new user action from a repeated beacon).
+                val payload = ("CATCAM1 $PORT " +
+                    (if (transportWifi) "wifi" else "usb") + " $transportGen").toByteArray()
                 try {
                     val targets = ArrayList<java.net.InetAddress>()
                     java.net.NetworkInterface.getNetworkInterfaces()?.let { nis ->

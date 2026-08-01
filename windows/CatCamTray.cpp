@@ -37,6 +37,7 @@
 #define WM_SHOWICON      (WM_APP + 2)   // posted by a second instance
 #define WM_EXITKEEPHOST  (WM_APP + 3)   // "/exit": quit tray, leave host running
 #define WM_WIFITOGGLE    (WM_APP + 4)   // "/wifi": toggle Wi-Fi mode remotely
+#define WM_TRANSPORTAPPLY (WM_APP + 5)  // beacon thread: registry already set, restart host
 #define ID_TRAY_OPENLOG  1001
 #define ID_TRAY_EXIT     1002
 #define ID_TRAY_HIDE     1003
@@ -211,6 +212,31 @@ static DWORD WINAPI BeaconThread(LPVOID) {
         beaconAtTick = GetTickCount64();
         LeaveCriticalSection(&beaconCs);
         if (changed) Log("beacon: tablet at %s", ip);
+
+        // Extended beacon: "CATCAM1 <port> <usb|wifi> <gen>". The tablet's
+        // transport switch rides here; gen counts user toggles, so a gen we
+        // have not seen = a fresh user action on the tablet, and it wins
+        // over the local menu state (last touch wins, either surface).
+        // gen 0 = never toggled; != not > so a reinstalled app still works.
+        char mode[16] = "";
+        unsigned gen = 0;
+        if (sscanf_s(buf + 8, "%*u %15s %u", mode, (unsigned)_countof(mode), &gen) == 2
+                && gen > 0) {
+            DWORD lastGen = 0, cb = sizeof(lastGen);
+            RegGetValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"TabletGen",
+                RRF_RT_REG_DWORD, nullptr, &lastGen, &cb);
+            if (gen != lastGen) {
+                RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"TabletGen",
+                    REG_DWORD, &gen, sizeof(gen));
+                const bool wantWifi = strcmp(mode, "wifi") == 0;
+                if (wantWifi != WifiEnabled()) {
+                    SetWifiEnabled(wantWifi);
+                    Log("tablet switched transport -> %s", mode);
+                    // Host restart happens on the main thread (it owns pi).
+                    PostMessageW(hwnd, WM_TRANSPORTAPPLY, 0, 0);
+                }
+            }
+        }
     }
 }
 
@@ -650,6 +676,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_WIFITOGGLE:
         // Remote verb ("CatCamTray.exe /wifi"): same as clicking the menu item.
         PostMessageW(h, WM_COMMAND, ID_TRAY_WIFI, 0);
+        return 0;
+    case WM_TRANSPORTAPPLY:
+        // Beacon thread already flipped the registry; act on it here (this
+        // thread owns pi). Watchdog respawns the host on the new transport.
+        if (WifiEnabled()) EnsureFirewallRule();
+        if (pi.hProcess) TerminateProcess(pi.hProcess, 0);
         return 0;
     case WM_TIMER:
         if (wp == IDT_PREVIEW) { PreviewTick(); return 0; }

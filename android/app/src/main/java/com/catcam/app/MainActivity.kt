@@ -65,6 +65,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var toneLabel: TextView
     private lateinit var segDay: TextView
     private lateinit var segNight: TextView
+    private lateinit var segUsb: TextView
+    private lateinit var segWifi: TextView
     private lateinit var audioBar: android.widget.ProgressBar
     private lateinit var preview: TextureView
 
@@ -120,7 +122,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
             (stack.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin =
                 (26 * d).toInt() + bars.bottom
-            (findViewById<TextView>(R.id.status_pill).layoutParams
+            (findViewById<android.widget.LinearLayout>(R.id.top_stack).layoutParams
                 as android.widget.FrameLayout.LayoutParams).topMargin = (12 * d).toInt() + bars.top
             root.requestLayout()
             insets
@@ -138,6 +140,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         toneLabel = findViewById(R.id.tone_label)
         segDay = findViewById(R.id.seg_day)
         segNight = findViewById(R.id.seg_night)
+        segUsb = findViewById(R.id.seg_usb)
+        segWifi = findViewById(R.id.seg_wifi)
         audioBar = findViewById(R.id.audio_level)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
@@ -153,6 +157,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         toneWarmBtn.setOnClickListener { stepTone(+1) }
         segDay.setOnClickListener { setDay(true) }
         segNight.setOnClickListener { setDay(false) }
+        segUsb.setOnClickListener { setTransport(false) }
+        segWifi.setOnClickListener { setTransport(true) }
 
         updateZoomLabel()
         updateTuningLabels()
@@ -232,12 +238,22 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         updateTuningLabels()
     }
 
+    // A REQUEST: the beacon carries it to the tray, which restarts the host
+    // on the chosen transport (a few seconds). The pill shows the actual
+    // transport once connected, and the switch snaps to reality then.
+    private fun setTransport(wifi: Boolean) {
+        StreamerService.setTransport(this, wifi)
+        updateTuningLabels()
+    }
+
     // ------------------------------------------------------------- state UI
 
     private fun updateStatusPill() {
         val s = StreamerService.statusText
         val (text, color) = when {
-            s.startsWith("Streaming") && StreamerService.clientConnected -> "LIVE" to COLOR_LIVE
+            s.startsWith("Streaming") && StreamerService.clientConnected ->
+                // Actual transport, read from where the connection came from.
+                ("LIVE · " + if (StreamerService.clientViaWifi == true) "Wi-Fi" else "USB") to COLOR_LIVE
             s == "Idle" -> "Idle" to COLOR_IDLE
             // While waiting, show this tablet's address: it is what the PC
             // side needs for cable-free (direct TCP) mode.
@@ -277,17 +293,20 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         zoomLabel.text = String.format(java.util.Locale.US, "%.1f×", StreamerService.zoomRatio)
     }
 
+    // Segmented pair styling: both options visible, the active one highlighted.
+    private fun styleSeg(v: TextView, active: Boolean) {
+        v.setBackgroundResource(R.drawable.pill_solid)
+        v.backgroundTintList = ColorStateList.valueOf(if (active) COLOR_SEG_ON else COLOR_SEG_OFF)
+        v.setTextColor(if (active) 0xFF000000.toInt() else 0xB3FFFFFF.toInt())
+    }
+
     private fun updateTuningLabels() {
         val t = StreamerService.toneStep
         toneLabel.text = if (t > 0) "+$t" else "$t"
-        val day = StreamerService.dayMode
-        // Segmented pair: both options visible, the active one highlighted.
-        segDay.setBackgroundResource(R.drawable.pill_solid)
-        segDay.backgroundTintList = ColorStateList.valueOf(if (day) COLOR_SEG_ON else COLOR_SEG_OFF)
-        segDay.setTextColor(if (day) 0xFF000000.toInt() else 0xB3FFFFFF.toInt())
-        segNight.setBackgroundResource(R.drawable.pill_solid)
-        segNight.backgroundTintList = ColorStateList.valueOf(if (!day) COLOR_SEG_ON else COLOR_SEG_OFF)
-        segNight.setTextColor(if (!day) 0xFF000000.toInt() else 0xB3FFFFFF.toInt())
+        styleSeg(segDay, StreamerService.dayMode)
+        styleSeg(segNight, !StreamerService.dayMode)
+        styleSeg(segUsb, !StreamerService.transportWifi)
+        styleSeg(segWifi, StreamerService.transportWifi)
     }
 
     // ------------------------------------------------------------- plumbing
