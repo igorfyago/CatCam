@@ -23,6 +23,8 @@
 // corrupt Frame Server state for the boot session (HANDOFF lesson 16).
 // Manifest requireAdministrator: the one UAC prompt happens at tray start.
 // ============================================================================
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
@@ -33,6 +35,8 @@
 
 #define WM_TRAYICON      (WM_USER + 1)
 #define WM_SHOWICON      (WM_APP + 2)   // posted by a second instance
+#define WM_EXITKEEPHOST  (WM_APP + 3)   // "/exit": quit tray, leave host running
+#define WM_WIFITOGGLE    (WM_APP + 4)   // "/wifi": toggle Wi-Fi mode remotely
 #define ID_TRAY_OPENLOG  1001
 #define ID_TRAY_EXIT     1002
 #define ID_TRAY_HIDE     1003
@@ -41,10 +45,13 @@
 #define ID_TRAY_CAMSTART 1006
 #define ID_TRAY_CAMSTOP  1007
 #define ID_TRAY_MONITOR  1008
+#define ID_TRAY_WIFI     1009
 #define IDT_TICK         42
 #define IDT_PREVIEW      43
 
 enum class CamState { Gray, Red, Yellow, Green };
+
+static Gdiplus::Bitmap* LoadMascot();   // defined in the icon section
 
 #pragma pack(push, 1)
 struct SharedMemHeader {                 // must match CatCamHost.cpp
@@ -68,6 +75,13 @@ static HANDLE hMap = nullptr;
 static volatile SharedMemHeader* shm = nullptr;
 static UINT64 lastIdx = 0;
 static ULONGLONG lastIdxChange = 0;
+
+// Tablet discovery: the app broadcasts "CATCAM1 <port>" on UDP :9001 every
+// 2s while streaming. A background thread records the freshest sender.
+static CRITICAL_SECTION beaconCs;
+static char beaconIp[64] = "";
+static ULONGLONG beaconAtTick = 0;
+static wchar_t hostIpArg[64] = L"";     // IP the running host was spawned with ("" = USB)
 
 // Preview window state
 static HWND prevWnd = nullptr;
@@ -127,6 +141,79 @@ static void SetMonitorEnabled(bool on) {
         REG_DWORD, &v, sizeof(v));
 }
 
+// Wi-Fi mode (HKCU\Software\CatCam, WifiMode DWORD, default 0 = USB).
+// ON: the host is spawned against the tablet IP heard on the discovery
+// beacon, direct TCP, no adb anywhere in the media path. The USB path
+// stays exactly as it always was when OFF.
+static bool WifiEnabled() {
+    DWORD v = 0, cb = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"WifiMode",
+            RRF_RT_REG_DWORD, nullptr, &v, &cb) == ERROR_SUCCESS)
+        return v != 0;
+    return false;
+}
+static void SetWifiEnabled(bool on) {
+    DWORD v = on ? 1 : 0;
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"WifiMode",
+        REG_DWORD, &v, sizeof(v));
+}
+
+// Inbound UDP :9001 must pass the Windows firewall for beacons to arrive.
+// One-time (registry-flagged), needs elevation, which the tray has.
+static void EnsureFirewallRule() {
+    DWORD v = 0, cb = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"FwBeaconRule",
+            RRF_RT_REG_DWORD, nullptr, &v, &cb) == ERROR_SUCCESS && v) return;
+    wchar_t cmd[512];
+    swprintf_s(cmd, L"cmd.exe /c netsh advfirewall firewall add rule "
+        L"name=\"CatCam discovery\" dir=in action=allow protocol=udp localport=9001");
+    STARTUPINFOW si{ sizeof(si) };
+    PROCESS_INFORMATION cpi{};
+    if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &cpi)) {
+        CloseHandle(cpi.hProcess); CloseHandle(cpi.hThread);
+        DWORD one = 1;
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\CatCam", L"FwBeaconRule",
+            REG_DWORD, &one, sizeof(one));
+        Log("firewall rule for beacon port added");
+    }
+}
+
+// Listens forever; cheap, runs in both modes so the IP is warm the moment
+// Wi-Fi mode is switched on.
+static DWORD WINAPI BeaconThread(LPVOID) {
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) { Log("beacon: socket failed %d", WSAGetLastError()); return 0; }
+    BOOL reuse = TRUE;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(9001);
+    a.sin_addr.s_addr = INADDR_ANY;
+    if (bind(s, (sockaddr*)&a, sizeof(a)) == SOCKET_ERROR) {
+        Log("beacon: bind 9001 failed %d", WSAGetLastError());
+        closesocket(s);
+        return 0;
+    }
+    char buf[128];
+    for (;;) {
+        sockaddr_in from{};
+        int flen = sizeof(from);
+        int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &flen);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        if (strncmp(buf, "CATCAM1 ", 8) != 0) continue;
+        char ip[64];
+        if (!inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip))) continue;
+        EnterCriticalSection(&beaconCs);
+        bool changed = strcmp(beaconIp, ip) != 0;
+        strcpy_s(beaconIp, ip);
+        beaconAtTick = GetTickCount64();
+        LeaveCriticalSection(&beaconCs);
+        if (changed) Log("beacon: tablet at %s", ip);
+    }
+}
+
 static void StartHost() {
     if (pi.hProcess) return; // already running/adopted
 
@@ -136,6 +223,26 @@ static void StartHost() {
         HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, existing);
         if (h) { pi = {}; pi.hProcess = h; Log("host adopted (pid %lu)", existing); return; }
         Log("host pid %lu found but OpenProcess failed (%lu)", existing, GetLastError());
+    }
+
+    // Wi-Fi mode: the host targets the beacon-discovered tablet IP. No
+    // beacon fresher than 15s means nothing to connect to yet; stay down
+    // and let the 1s watchdog retry (log at most every 30s).
+    wchar_t wifiIp[64] = L"";
+    if (WifiEnabled()) {
+        EnterCriticalSection(&beaconCs);
+        if (beaconIp[0] && GetTickCount64() - beaconAtTick < 15000)
+            swprintf_s(wifiIp, L"%S", beaconIp);
+        LeaveCriticalSection(&beaconCs);
+        if (!wifiIp[0]) {
+            static ULONGLONG lastNoBeacon = 0;
+            ULONGLONG now = GetTickCount64();
+            if (now - lastNoBeacon > 30000) {
+                lastNoBeacon = now;
+                Log("wifi mode: waiting for tablet beacon");
+            }
+            return;
+        }
     }
 
     // Append host stdout/stderr to host.log so diagnostics survive the
@@ -149,7 +256,10 @@ static void StartHost() {
     swprintf_s(exe, L"%s\\CatCamHost.exe", dir);
     const bool monitor = MonitorEnabled();
     wchar_t cmd[MAX_PATH * 2];
-    swprintf_s(cmd, L"\"%s\"%s", exe, monitor ? L"" : L" --mute");
+    swprintf_s(cmd, L"\"%s\"%s%s%s", exe,
+        wifiIp[0] ? L" " : L"", wifiIp,
+        monitor ? L"" : L" --mute");
+    wcscpy_s(hostIpArg, wifiIp);
     STARTUPINFOW si{ sizeof(si) };
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
@@ -159,8 +269,8 @@ static void StartHost() {
     }
     if (CreateProcessW(exe, cmd, nullptr, nullptr, TRUE,
             CREATE_NO_WINDOW, nullptr, dir, &si, &pi)) {
-        Log("host started hidden (pid %lu, monitor %s)", pi.dwProcessId,
-            monitor ? "ON" : "muted");
+        Log("host started hidden (pid %lu, monitor %s, target %s)", pi.dwProcessId,
+            monitor ? "ON" : "muted", wifiIp[0] ? "wifi" : "usb");
     } else {
         Log("host start failed (%lu)", GetLastError());
     }
@@ -269,6 +379,21 @@ static void OpenPreview() {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
         rc.right - rc.left, rc.bottom - rc.top,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    // Title-bar/taskbar mascot (built once from the tray art, no dot).
+    static HICON prevIcon = nullptr;
+    if (!prevIcon) {
+        if (Gdiplus::Bitmap* mascot = LoadMascot()) {
+            Gdiplus::Bitmap b(32, 32, PixelFormat32bppARGB);
+            Gdiplus::Graphics g(&b);
+            g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            g.DrawImage(mascot, 0, 0, 32, 32);
+            b.GetHICON(&prevIcon);
+        }
+    }
+    if (prevIcon) {
+        SendMessageW(prevWnd, WM_SETICON, ICON_SMALL, (LPARAM)prevIcon);
+        SendMessageW(prevWnd, WM_SETICON, ICON_BIG, (LPARAM)prevIcon);
+    }
     prevShownIdx = 0; // force first frame
 }
 
@@ -352,7 +477,22 @@ static CamState ReadState() {
 
 // ---------------------------------------------------------------- icon
 
-// 32x32 webcam glyph with a status dot, drawn at runtime with GDI+.
+// Brand mascot (windows\catcam64.png, the cat face) loaded once via GDI+
+// (PNG alpha survives, unlike the HICON round-trips). nullptr = fall back
+// to the old runtime-drawn webcam glyph.
+static Gdiplus::Bitmap* LoadMascot() {
+    static Gdiplus::Bitmap* m = (Gdiplus::Bitmap*)(INT_PTR)-1;
+    if (m == (Gdiplus::Bitmap*)(INT_PTR)-1) {
+        wchar_t p[MAX_PATH];
+        swprintf_s(p, L"%s\\catcam64.png", dir);
+        m = new Gdiplus::Bitmap(p);
+        if (!m || m->GetLastStatus() != Gdiplus::Ok) { delete m; m = nullptr; }
+        Log(m ? "mascot icon loaded" : "catcam64.png missing, drawn glyph fallback");
+    }
+    return m;
+}
+
+// 32x32 mascot (or webcam glyph) with a status dot, composed with GDI+.
 static HICON BuildIcon(CamState st) {
     using namespace Gdiplus;
     Bitmap bmp(32, 32, PixelFormat32bppARGB);
@@ -360,22 +500,27 @@ static HICON BuildIcon(CamState st) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.Clear(Color(0, 0, 0, 0));
 
-    // Camera body: circle, light gray with darker rim.
-    SolidBrush body(Color(255, 225, 225, 228));
-    Pen rim(Color(255, 90, 90, 96), 2.0f);
-    g.FillEllipse(&body, 3, 1, 26, 26);
-    g.DrawEllipse(&rim, 3, 1, 26, 26);
-    // Lens: dark ring + blue-ish pupil with a highlight.
-    SolidBrush lensOuter(Color(255, 45, 45, 52));
-    g.FillEllipse(&lensOuter, 9, 7, 14, 14);
-    SolidBrush pupil(Color(255, 70, 110, 160));
-    g.FillEllipse(&pupil, 12, 10, 8, 8);
-    SolidBrush glint(Color(200, 240, 240, 245));
-    g.FillEllipse(&glint, 13, 11, 3, 3);
-    // Stand.
-    Pen stand(Color(255, 90, 90, 96), 3.0f);
-    g.DrawLine(&stand, 16, 27, 16, 30);
-    g.DrawLine(&stand, 10, 31, 22, 31);
+    if (Bitmap* mascot = LoadMascot()) {
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.DrawImage(mascot, 0, 0, 32, 32);
+    } else {
+        // Camera body: circle, light gray with darker rim.
+        SolidBrush body(Color(255, 225, 225, 228));
+        Pen rim(Color(255, 90, 90, 96), 2.0f);
+        g.FillEllipse(&body, 3, 1, 26, 26);
+        g.DrawEllipse(&rim, 3, 1, 26, 26);
+        // Lens: dark ring + blue-ish pupil with a highlight.
+        SolidBrush lensOuter(Color(255, 45, 45, 52));
+        g.FillEllipse(&lensOuter, 9, 7, 14, 14);
+        SolidBrush pupil(Color(255, 70, 110, 160));
+        g.FillEllipse(&pupil, 12, 10, 8, 8);
+        SolidBrush glint(Color(200, 240, 240, 245));
+        g.FillEllipse(&glint, 13, 11, 3, 3);
+        // Stand.
+        Pen stand(Color(255, 90, 90, 96), 3.0f);
+        g.DrawLine(&stand, 16, 27, 16, 30);
+        g.DrawLine(&stand, 10, 31, 22, 31);
+    }
 
     // Status dot, bottom-right, with dark outline for contrast.
     Color dot;
@@ -395,9 +540,10 @@ static HICON BuildIcon(CamState st) {
     return icon;
 }
 
+// Same status vocabulary as the tablet app's pill (LIVE / waiting).
 static const wchar_t* StateTip(CamState st) {
     switch (st) {
-    case CamState::Green:  return L"CatCam \u00b7 streaming";
+    case CamState::Green:  return L"CatCam \u00b7 LIVE";
     case CamState::Yellow: return L"CatCam \u00b7 waiting for tablet";
     case CamState::Red:    return L"CatCam \u00b7 host down, restarting";
     default:               return L"CatCam \u00b7 starting";
@@ -433,6 +579,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTART, L"Start tablet camera");
             AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTOP, L"Stop tablet camera");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING | (WifiEnabled() ? MF_CHECKED : 0),
+                ID_TRAY_WIFI, L"Wi-Fi mode (no cable)");
             AppendMenuW(menu, MF_STRING | (MonitorEnabled() ? MF_CHECKED : 0),
                 ID_TRAY_MONITOR, L"Speaker monitor (hear tablet room)");
             AppendMenuW(menu, MF_STRING, ID_TRAY_OPENLOG, L"Open host log");
@@ -449,6 +597,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) == ID_TRAY_FLIP)     RunCamCtl(L"flip");
         if (LOWORD(wp) == ID_TRAY_CAMSTART) RunCamCtl(L"start");
         if (LOWORD(wp) == ID_TRAY_CAMSTOP)  RunCamCtl(L"stop");
+        if (LOWORD(wp) == ID_TRAY_WIFI) {
+            const bool on = !WifiEnabled();
+            SetWifiEnabled(on);
+            Log("wifi mode %s; restarting host", on ? "ON" : "OFF");
+            if (on) EnsureFirewallRule();
+            // Kill the host; the tick watchdog restarts it on the new transport.
+            if (pi.hProcess) TerminateProcess(pi.hProcess, 0);
+        }
         if (LOWORD(wp) == ID_TRAY_MONITOR) {
             const bool on = !MonitorEnabled();
             SetMonitorEnabled(on);
@@ -477,6 +633,24 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             Log("icon re-shown");
         }
         return 0;
+    case WM_EXITKEEPHOST:
+        // Deploy verb ("CatCamTray.exe /exit"): quit the tray but LEAVE the
+        // host running; the next tray adopts it (lesson 16: never duplicate,
+        // never re-register). Makes tray swaps possible from an unelevated
+        // shell with no UAC prompt.
+        Log("exit requested (/exit), host left running");
+        if (pi.hProcess) {
+            CloseHandle(pi.hProcess);
+            if (pi.hThread) CloseHandle(pi.hThread);
+            pi = {};
+        }
+        if (!iconHidden) Shell_NotifyIconW(NIM_DELETE, &nid);
+        PostQuitMessage(0);
+        return 0;
+    case WM_WIFITOGGLE:
+        // Remote verb ("CatCamTray.exe /wifi"): same as clicking the menu item.
+        PostMessageW(h, WM_COMMAND, ID_TRAY_WIFI, 0);
+        return 0;
     case WM_TIMER:
         if (wp == IDT_PREVIEW) { PreviewTick(); return 0; }
         if (wp == IDT_TICK) {
@@ -491,13 +665,29 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (!pi.hProcess && GetTickCount64() >= nextStartAllowed) StartHost();
             CamState st = ReadState();
             UpdateIcon(st);
-            // Yellow = host alive, frames stalled: the dominant cause is a
-            // dead adb forward. After 5s of stall re-add it, then every 30s
-            // while the stall lasts (covers tablet-off gracefully).
+            // Yellow = host alive, frames stalled. USB: the dominant cause
+            // is a dead adb forward, re-add it (5s, then every 30s). WiFi:
+            // there is no forward; the actionable cause is the tablet
+            // having moved to a new IP (DHCP), so restart the host against
+            // the fresh beacon; same-IP stalls are the host's own retry
+            // loop's job.
             if (st == CamState::Yellow) {
                 ULONGLONG now = GetTickCount64();
                 if (++stalledSecs >= 5 && now >= nextHealAt) {
-                    RunAdbForward();
+                    if (WifiEnabled()) {
+                        wchar_t cur[64];
+                        EnterCriticalSection(&beaconCs);
+                        swprintf_s(cur, L"%S", beaconIp);
+                        LeaveCriticalSection(&beaconCs);
+                        if (cur[0] && hostIpArg[0] && _wcsicmp(cur, hostIpArg) != 0
+                                && pi.hProcess) {
+                            Log("wifi heal: tablet moved %S -> %S, restarting host",
+                                hostIpArg, cur);
+                            TerminateProcess(pi.hProcess, 0);
+                        }
+                    } else {
+                        RunAdbForward();
+                    }
                     nextHealAt = now + 30000;
                 }
             } else {
@@ -510,15 +700,24 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     HANDLE mtx = CreateMutexW(nullptr, TRUE, L"Global\\CatCamTray_Once");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Second launch = "show the icon again" signal to the running
-        // instance. The main window is MESSAGE-ONLY, and FindWindowW never
-        // sees those: search the HWND_MESSAGE list explicitly (this was the
+        // Second launch signals the running instance. Default: "show the
+        // icon again". Verbs: /exit (quit, keep host: promptless tray
+        // swaps) and /wifi (toggle Wi-Fi mode remotely). The main window
+        // is MESSAGE-ONLY, and FindWindowW never sees those: search the
+        // HWND_MESSAGE list explicitly (this was the
         // hide-then-cannot-unhide bug).
         HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"CatCamTray", nullptr);
-        if (existing) PostMessageW(existing, WM_SHOWICON, 0, 0);
+        if (existing) {
+            if (cmdLine && wcsstr(cmdLine, L"/exit"))
+                PostMessageW(existing, WM_EXITKEEPHOST, 0, 0);
+            else if (cmdLine && wcsstr(cmdLine, L"/wifi"))
+                PostMessageW(existing, WM_WIFITOGGLE, 0, 0);
+            else
+                PostMessageW(existing, WM_SHOWICON, 0, 0);
+        }
         return 0;
     }
 
@@ -538,6 +737,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     // instance: UIPI silently drops app-range messages from lower
     // integrity unless explicitly allowed.
     ChangeWindowMessageFilterEx(hwnd, WM_SHOWICON, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(hwnd, WM_EXITKEEPHOST, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(hwnd, WM_WIFITOGGLE, MSGFLT_ALLOW, nullptr);
+
+    // Tablet discovery listener (both modes; the IP is warm the moment
+    // Wi-Fi mode is enabled). Firewall pass for the beacon port is ensured
+    // up front when Wi-Fi mode is already on (registry-toggled starts).
+    InitializeCriticalSection(&beaconCs);
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0)
+        CreateThread(nullptr, 0, BeaconThread, nullptr, 0, nullptr);
+    else
+        Log("WSAStartup failed: no beacon listener");
+    if (WifiEnabled()) EnsureFirewallRule();
 
     WNDCLASSW pc{};
     pc.lpfnWndProc = PreviewWndProc; pc.hInstance = inst;

@@ -91,6 +91,12 @@ class StreamerService : Service() {
         private const val ABR_TICK_MS = 1000L
         private const val ABR_CLEAN_SECS = 5
 
+        // Discovery beacon: "CATCAM1 <video-port>" as a UDP broadcast on
+        // this port every 2s while the service runs, so the PC tray can
+        // find the tablet with no adb, no cable and no typed IPs.
+        const val BEACON_PORT = 9001
+        private const val BEACON_INTERVAL_MS = 2000L
+
         @Volatile var preferFrontCamera = true
 
         // Last user camera choice survives process restarts (tray auto-restart,
@@ -287,6 +293,7 @@ class StreamerService : Service() {
 
         thread(name = "CatCamServer") { serverLoop() }
         thread(name = "CatCamAudio") { audioLoop() }
+        thread(name = "CatCamBeacon") { beaconLoop() }
         openCameraAndEncoder()
     }
 
@@ -774,6 +781,40 @@ class StreamerService : Service() {
             } catch (e: Exception) {
                 if (running.get()) Log.w(TAG, "drainEncoder: ${e.message}")
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- beacon
+
+    // Broadcast to every up interface's broadcast address (falls back to the
+    // global broadcast). Failures are quiet: WiFi being off just means the
+    // tray discovers nothing until it is back.
+    private fun beaconLoop() {
+        var sock: java.net.DatagramSocket? = null
+        try {
+            sock = java.net.DatagramSocket().apply { broadcast = true }
+            val payload = "CATCAM1 $PORT".toByteArray()
+            while (running.get()) {
+                try {
+                    val targets = ArrayList<java.net.InetAddress>()
+                    java.net.NetworkInterface.getNetworkInterfaces()?.let { nis ->
+                        for (ni in nis) {
+                            if (!ni.isUp || ni.isLoopback) continue
+                            for (ia in ni.interfaceAddresses) ia.broadcast?.let { targets.add(it) }
+                        }
+                    }
+                    if (targets.isEmpty())
+                        targets.add(java.net.InetAddress.getByName("255.255.255.255"))
+                    for (t in targets)
+                        sock.send(java.net.DatagramPacket(payload, payload.size, t, BEACON_PORT))
+                } catch (_: Exception) {
+                }
+                Thread.sleep(BEACON_INTERVAL_MS)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "beacon: ${e.message}")
+        } finally {
+            try { sock?.close() } catch (_: Exception) {}
         }
     }
 
