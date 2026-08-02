@@ -217,39 +217,48 @@
   }
 
 
-  /* ------------------------------------------------- dark mode (OS pref)
-     Warm charcoal, same brand: light mode is untouched by construction. */
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --cream: #171310; --cream2: #201A14; --peach: #3A2812;
-      --ink: #F2E9DC; --soft: #B3A695; --line: #3A322A;
-      --orange: #F59E4C; --orange-deep: #F5A45C;
-      --card: #241E17;
-    }
-    .navbar {
-      background: rgba(28, 23, 18, .82);
-      box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
-    }
-    .btn-dark { background: var(--orange); color: #201505; }
-    .kicker { box-shadow: none; }
-    .chip { box-shadow: 0 10px 26px rgba(0, 0, 0, .45); }
-    .mockwrap img.tablet { filter: drop-shadow(0 30px 60px rgba(0, 0, 0, .55)); }
-    .hero {
-      background:
-        radial-gradient(900px 480px at 85% -10%, var(--peach), transparent 70%),
-        radial-gradient(700px 420px at -10% 30%, #2A1E10, transparent 70%);
-    }
-    .panel { background: linear-gradient(160deg, #221C15, #1C1710); }
-    .uiseg, .uipill { box-shadow: 0 16px 40px rgba(0, 0, 0, .5); }
-    .beacon .node { background: var(--card); border: 1px solid var(--line); color: var(--ink); }
-    /* The privacy band inverts: it is the dark block in light mode, so in
-       dark mode it becomes the light one. Same trick, mirrored. */
-    .privacyband { background: #FFF3E0; color: #33302c; }
-    .privacyband .h2 { color: #2A2622; }
-    .privacyband .h2 em { color: #E8862F; }
-    .privacyband p { color: #6f675e; }
-    .privacyband .btn-light { background: #2A2622; color: #FFF3E0; }
+  /* --------------------------------------------- dark mode (data-theme)
+     Set before first paint by the head script: saved choice, else the OS
+     preference. Light mode rules above are untouched. */
+  html[data-theme="dark"] {
+    --cream: #171310; --cream2: #201A14; --peach: #3A2812;
+    --ink: #F2E9DC; --soft: #B3A695; --line: #3A322A;
+    --orange: #F59E4C; --orange-deep: #F5A45C;
+    --card: #241E17;
   }
+  html[data-theme="dark"] body { background: var(--cream); }
+  html[data-theme="dark"] .navbar {
+    background: rgba(28, 23, 18, .82);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
+  }
+  html[data-theme="dark"] .btn-dark { background: var(--orange); color: #201505; }
+  html[data-theme="dark"] .kicker { box-shadow: none; }
+  html[data-theme="dark"] .chip { box-shadow: 0 10px 26px rgba(0, 0, 0, .45); }
+  html[data-theme="dark"] .mockwrap img.tablet { filter: drop-shadow(0 30px 60px rgba(0, 0, 0, .55)); }
+  html[data-theme="dark"] .hero {
+    background:
+      radial-gradient(900px 480px at 85% -10%, var(--peach), transparent 70%),
+      radial-gradient(700px 420px at -10% 30%, #2A1E10, transparent 70%);
+  }
+  html[data-theme="dark"] .panel { background: linear-gradient(160deg, #221C15, #1C1710); }
+  html[data-theme="dark"] .uiseg, html[data-theme="dark"] .uipill { box-shadow: 0 16px 40px rgba(0, 0, 0, .5); }
+  html[data-theme="dark"] .beacon .node { background: var(--card); border: 1px solid var(--line); color: var(--ink); }
+  html[data-theme="dark"] .privacyband { background: #FFF3E0; color: #33302c; }
+  html[data-theme="dark"] .privacyband .h2 { color: #2A2622; }
+  html[data-theme="dark"] .privacyband .h2 em { color: #E8862F; }
+  html[data-theme="dark"] .privacyband p { color: #6f675e; }
+  html[data-theme="dark"] .privacyband .btn-light { background: #2A2622; color: #FFF3E0; }
+  /* nav toggle: moon shown in light (tap for dark), sun shown in dark */
+  .theme-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 50%; border: none;
+    background: transparent; color: var(--soft); cursor: pointer;
+  }
+  .theme-toggle:hover { color: var(--ink); }
+  .theme-toggle svg { width: 19px; height: 19px; }
+  .theme-toggle .sun { display: none; }
+  html[data-theme="dark"] .theme-toggle .sun { display: block; }
+  html[data-theme="dark"] .theme-toggle .moon { display: none; }
   @media (max-width: 860px) {
     .hero { padding: 30px 0 24px; }
     .hero .wrap {
@@ -269,6 +278,11 @@
   }
   @media (max-width: 520px) { .grid4 { grid-template-columns: 1fr; } }
 </style>
+<script>
+  document.documentElement.dataset.theme =
+    localStorage.getItem("theme") ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
 </head>
 <body>
 
@@ -278,6 +292,10 @@
     <span class="brand">CatCam</span>
     <span class="spacer"></span>
     <a class="gh" href="https://github.com/igorfyago/CatCam">GitHub</a>
+    <button class="theme-toggle" id="themeToggle" aria-label="Switch light/dark">
+      <svg class="moon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c3.79 0 7.03-2.35 8.35-5.67-.79.29-1.65.45-2.55.45-4.14 0-7.5-3.36-7.5-7.5 0-1.77.62-3.4 1.65-4.68C11.7 3.02 11.85 3 12 3z"/></svg>
+      <svg class="sun" viewBox="0 0 24 24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"/></svg>
+    </button>
     <a class="btn btn-dark" href="#download">Download</a>
   </div>
 </nav>
@@ -413,6 +431,16 @@
 </footer>
 
 <script>
+  document.getElementById("themeToggle").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+  });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", e => {
+    if (!localStorage.getItem("theme"))
+      document.documentElement.dataset.theme = e.matches ? "dark" : "light";
+  });
+
   const io = new IntersectionObserver(es => {
     for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
   }, { threshold: 0.12 });
