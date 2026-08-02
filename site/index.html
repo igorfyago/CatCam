@@ -61,7 +61,13 @@
       radial-gradient(700px 420px at -10% 30%, #FFE9CE, transparent 70%);
     padding: 72px 0 40px;
   }
-  .hero .wrap { display: grid; grid-template-columns: 1.1fr .9fr; gap: 32px; align-items: center; }
+  .hero .wrap {
+    display: grid; gap: 6px 32px; align-items: center;
+    grid-template-columns: 1.1fr .9fr;
+    grid-template-areas: "intro mock" "actions mock";
+  }
+  .hero-intro { grid-area: intro; align-self: end; }
+  .hero-actions { grid-area: actions; align-self: start; }
   .kicker {
     display: inline-flex; align-items: center; gap: 8px;
     background: var(--card); border: 1px solid var(--line); border-radius: 999px;
@@ -78,7 +84,7 @@
   .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
   .req { font-size: 13.5px; color: var(--soft); }
 
-  .mockwrap { position: relative; justify-self: center; }
+  .mockwrap { grid-area: mock; position: relative; justify-self: center; }
   .mockwrap img.tablet {
     width: min(400px, 82vw); height: auto; display: block;
     filter: drop-shadow(0 30px 60px rgba(90, 55, 15, .28));
@@ -206,10 +212,17 @@
   }
 
   @media (max-width: 860px) {
-    .hero .wrap { grid-template-columns: 1fr; text-align: center; }
-    .sub { margin-left: auto; margin-right: auto; }
-    .cta { justify-content: center; }
-    .mockwrap { margin-top: 26px; }
+    .hero { padding: 30px 0 24px; }
+    .hero .wrap {
+      grid-template-columns: 1fr; text-align: center; gap: 0;
+      grid-template-areas: "intro" "mock" "actions";
+    }
+    .kicker { margin-bottom: 14px; }
+    h1 { margin-bottom: 12px; }
+    .sub { margin-left: auto; margin-right: auto; margin-bottom: 10px; }
+    .cta { justify-content: center; margin-bottom: 12px; }
+    .mockwrap { margin: 12px 0 18px; }
+    .trust { padding-top: 16px; }
     .chip.c1 { left: -2%; } .chip.c2 { right: -2%; } .chip.c3 { left: -4%; }
     .panel { grid-template-columns: 1fr; padding: 28px 22px; }
     .grid4 { grid-template-columns: 1fr 1fr; }
@@ -232,11 +245,13 @@
 
 <div class="hero">
   <div class="wrap">
-    <div>
+    <div class="hero-intro">
       <span class="kicker"><span class="dot"></span> Free &amp; open source</span>
       <h1>Your spare tablet is a <em>webcam</em>.</h1>
       <p class="sub">CatCam turns any Android tablet into a crisp Windows webcam,
       over <b>Wi-Fi or USB</b>. Two installs, zero setup: they find each other.</p>
+    </div>
+    <div class="hero-actions">
       <div class="cta" id="download">
         <a class="btn btn-dark" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCamSetup.exe">Download for Windows</a>
         <a class="btn btn-light" href="https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk">Get the tablet app</a>
