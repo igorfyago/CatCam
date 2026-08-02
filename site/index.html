@@ -9,6 +9,8 @@
 <meta property="og:description" content="Turn a spare tablet into your PC's webcam. Over Wi-Fi or USB. No cloud, no accounts, open source.">
 <meta property="og:image" content="https://catcam.app/logo512.png">
 <link rel="icon" href="logo512.png">
+<meta name="theme-color" content="#FFF6EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
 <style>
   :root {
     --cream: #FFF6EA; --cream2: #FFF0DC; --peach: #FFE3C2;
@@ -214,6 +216,40 @@
     .chip, .beacon .ring { animation: none; }
   }
 
+
+  /* ------------------------------------------------- dark mode (OS pref)
+     Warm charcoal, same brand: light mode is untouched by construction. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --cream: #171310; --cream2: #201A14; --peach: #3A2812;
+      --ink: #F2E9DC; --soft: #B3A695; --line: #3A322A;
+      --orange: #F59E4C; --orange-deep: #F5A45C;
+      --card: #241E17;
+    }
+    .navbar {
+      background: rgba(28, 23, 18, .82);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
+    }
+    .btn-dark { background: var(--orange); color: #201505; }
+    .kicker { box-shadow: none; }
+    .chip { box-shadow: 0 10px 26px rgba(0, 0, 0, .45); }
+    .mockwrap img.tablet { filter: drop-shadow(0 30px 60px rgba(0, 0, 0, .55)); }
+    .hero {
+      background:
+        radial-gradient(900px 480px at 85% -10%, var(--peach), transparent 70%),
+        radial-gradient(700px 420px at -10% 30%, #2A1E10, transparent 70%);
+    }
+    .panel { background: linear-gradient(160deg, #221C15, #1C1710); }
+    .uiseg, .uipill { box-shadow: 0 16px 40px rgba(0, 0, 0, .5); }
+    .beacon .node { background: var(--card); border: 1px solid var(--line); color: var(--ink); }
+    /* The privacy band inverts: it is the dark block in light mode, so in
+       dark mode it becomes the light one. Same trick, mirrored. */
+    .privacyband { background: #FFF3E0; color: #33302c; }
+    .privacyband .h2 { color: #2A2622; }
+    .privacyband .h2 em { color: #E8862F; }
+    .privacyband p { color: #6f675e; }
+    .privacyband .btn-light { background: #2A2622; color: #FFF3E0; }
+  }
   @media (max-width: 860px) {
     .hero { padding: 30px 0 24px; }
     .hero .wrap {
