@@ -652,27 +652,51 @@ class StreamerService : Service() {
     }
 
     // Choose a capture size this camera LISTS (an unlisted size is no-video
-    // or an exception on stricter HALs). Preference order keeps the measured
-    // SM-T220 modes exactly: front = 1600x1200 if listed, else the largest
-    // 4:3 near 2MP; back = 1280x720 if listed, else the largest 16:9 up to
-    // 1080p-ish; last resort = the largest listed size around 2MP.
+    // or an exception on stricter HALs).
+    //
+    // Front: the measured SM-T220 mode (1600x1200) if listed, else the
+    // largest 4:3 near 2MP. Untouched: the selfie path is tuned and proven.
+    //
+    // Back: the 8MP sensor deserves better than the HAL's row-discarding
+    // 720p crop. Prefer the 4:3 mode whose WIDTH is closest to 2x the
+    // encode height (2560 for 720x1280): after the stMatrix rotation the
+    // capture width becomes the content height, so that mode downscales
+    // EXACTLY 2:1 into the encode, and a 2:1 bilinear is a perfect 4-tap
+    // average: maximum real detail, zero aliasing shimmer. Only modes the
+    // HAL can deliver at 30fps qualify (getOutputMinFrameDuration).
     private fun pickCaptureSize(front: Boolean): Pair<Int, Int> {
-        val sizes = chosenChars
-            ?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+        val map = chosenChars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
         if (sizes.isNullOrEmpty()) return VIDEO_WIDTH to VIDEO_HEIGHT
-        val exact = if (front) sizes.firstOrNull { it.width == 1600 && it.height == 1200 }
-                    else sizes.firstOrNull { it.width == VIDEO_WIDTH && it.height == VIDEO_HEIGHT }
+        fun is43(s: android.util.Size) =
+            Math.abs(s.width.toFloat() / s.height - 4f / 3f) < 0.05f
+        fun fps30(s: android.util.Size) = try {
+            map!!.getOutputMinFrameDuration(android.graphics.SurfaceTexture::class.java, s) <= 34_000_000L
+        } catch (_: Exception) { true }
+        if (front) {
+            val exact = sizes.firstOrNull { it.width == 1600 && it.height == 1200 }
+            if (exact != null) return exact.width to exact.height
+            val match = sizes.filter { is43(it) && it.width * it.height <= 2_100_000 }
+                .maxByOrNull { it.width * it.height }
+            val pick = match
+                ?: sizes.filter { it.width * it.height <= 2_200_000 }.maxByOrNull { it.width * it.height }
+                ?: sizes.minByOrNull { it.width * it.height }!!
+            Log.i(TAG, "capture size negotiated: ${pick.width}x${pick.height} (front)")
+            return pick.width to pick.height
+        }
+        val targetW = 2 * 1280
+        val big = sizes.filter { is43(it) && it.width in 1600..3300 && fps30(it) }
+            .minByOrNull { Math.abs(it.width - targetW) }
+        if (big != null) {
+            Log.i(TAG, "capture size negotiated: ${big.width}x${big.height} (back, supersampled)")
+            return big.width to big.height
+        }
+        // Fallback: the old proven back path.
+        val exact = sizes.firstOrNull { it.width == VIDEO_WIDTH && it.height == VIDEO_HEIGHT }
         if (exact != null) return exact.width to exact.height
-        val wantRatio = if (front) 4f / 3f else 16f / 9f
-        val match = sizes.filter {
-            Math.abs(it.width.toFloat() / it.height - wantRatio) < 0.05f &&
-            it.width * it.height <= 2_100_000
-        }.maxByOrNull { it.width * it.height }
-        val pick = match
-            ?: sizes.filter { it.width * it.height <= 2_200_000 }.maxByOrNull { it.width * it.height }
+        val pick = sizes.filter { it.width * it.height <= 2_200_000 }.maxByOrNull { it.width * it.height }
             ?: sizes.minByOrNull { it.width * it.height }!!
-        Log.i(TAG, "capture size negotiated: ${pick.width}x${pick.height} (front=$front)")
+        Log.i(TAG, "capture size negotiated: ${pick.width}x${pick.height} (back, fallback)")
         return pick.width to pick.height
     }
 
