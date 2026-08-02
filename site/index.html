@@ -104,6 +104,9 @@
   @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 
   .trust { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding: 26px 0 0; }
+  /* .trust also carries .wrap inside .hero, so the hero's grid rule was
+     capturing it and stretching the pills into grid cells: exempt it. */
+  .hero .wrap.trust { display: flex; }
   .trust span {
     background: var(--card); border: 1px solid var(--line); border-radius: 999px;
     padding: 8px 16px; font-size: 13.5px; font-weight: 600; color: var(--soft);
