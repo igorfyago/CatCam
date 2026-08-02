@@ -2,10 +2,10 @@
 ; Replaces the elevated-PowerShell ceremony of install.ps1 with a wizard:
 ; copies the runtime to Program Files (which LOCAL SERVICE can read, so the
 ; old icacls grant is unnecessary), registers the COM media source, creates
-; the elevated logon task, optionally sets up the microphone path (VB-Audio
+; the elevated logon task, sets up the microphone path as standard (VB-Audio
 ; Virtual Cable, fetched from vb-audio.com, never bundled: their license
 ; forbids redistribution) and optionally fetches Google platform-tools for
-; USB cable mode. Wi-Fi mode needs neither optional piece.
+; USB cable mode. Wi-Fi mode needs no cable and no adb.
 ; Build: iscc CatCamSetup.iss   (output: Output\CatCamSetup.exe)
 
 [Setup]
@@ -47,7 +47,6 @@ Source: "task-setup.ps1";              DestDir: "{app}"; Flags: ignoreversion
 Source: "catcam.ico";                  DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
-Name: "mic"; Description: "Microphone support (downloads VB-Audio Virtual Cable from vb-audio.com, their installer will open)"; Flags: unchecked
 Name: "usb"; Description: "USB cable mode (downloads Google platform-tools; Wi-Fi mode needs no cable)"; Flags: unchecked
 
 [Icons]
@@ -59,7 +58,11 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\CatCamSource.dll"""; Sta
 ; spaces-in-Program-Files path correctly, where raw schtasks /tr quoting
 ; silently broke (found by the VM test). The script also starts the task.
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\task-setup.ps1"" -Boot ""{app}\catcam-boot.bat"""; StatusMsg: "Creating the startup task..."
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"""; StatusMsg: "Setting up microphone support..."; Tasks: mic
+; Microphone support is part of the standard install (idempotent: skips if
+; VB-Cable is present, fails soft to opening the official page). Skipped in
+; VERY SILENT installs only: VB-Audio's installer is a GUI and would hang a
+; headless run; automation can run mic-setup.ps1 itself.
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"""; StatusMsg: "Setting up microphone support..."; Check: not WizardSilent
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\usb-setup.ps1"" -InstallDir ""{app}"""; StatusMsg: "Fetching platform-tools for USB mode..."; Tasks: usb
 
 [UninstallRun]

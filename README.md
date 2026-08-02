@@ -84,8 +84,10 @@ has no cable.
 - Windows 11 22H2 or newer (the virtual camera API appeared there).
 - An Android 8+ device on the same network (or a USB cable; cable mode
   needs USB debugging and `adb`, which the installer can fetch for you).
-- Optional, for the microphone: VB-Audio Virtual Cable (free donationware;
-  the installer fetches it from the official site, it is not bundled).
+- For the microphone: VB-Audio Virtual Cable (free donationware). The
+  installer sets it up as part of the standard install, fetched from the
+  official site, never bundled; click "Install Driver" when their
+  installer opens.
 - To build from source: Visual Studio 2022 (C++, any edition; the build
   scripts find Community/Professional/Enterprise/BuildTools), Windows 11
   SDK, and for the Android app Gradle + Android SDK.
@@ -98,11 +100,12 @@ slightly longer version:
 
 1. On the PC: run
    [CatCamSetup.exe](https://github.com/igorfyago/CatCam/releases/latest/download/CatCamSetup.exe).
-   One wizard, one UAC prompt: it registers the virtual camera, creates
-   the startup task and launches the tray. Two optional checkboxes add
-   microphone support (fetches VB-Cable) and USB cable mode (fetches
-   platform-tools). It is not code-signed yet, so SmartScreen will ask
-   for courage: "More info", "Run anyway".
+   One wizard, one UAC prompt: it registers the virtual camera, sets up
+   the microphone (VB-Cable, fetched from the official site; click
+   "Install Driver" when their installer opens), creates the startup
+   task and launches the tray. One optional checkbox adds USB cable mode
+   (fetches platform-tools). It is not code-signed yet, so SmartScreen
+   will ask for courage: "More info", "Run anyway".
 2. On the device: install
    [CatCam-android.apk](https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk)
    and press the big button.
