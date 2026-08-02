@@ -58,11 +58,11 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\CatCamSource.dll"""; Sta
 ; spaces-in-Program-Files path correctly, where raw schtasks /tr quoting
 ; silently broke (found by the VM test). The script also starts the task.
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\task-setup.ps1"" -Boot ""{app}\catcam-boot.bat"""; StatusMsg: "Creating the startup task..."
-; Microphone support is part of the standard install (idempotent: skips if
-; VB-Cable is present, fails soft to opening the official page). Skipped in
-; VERY SILENT installs only: VB-Audio's installer is a GUI and would hang a
-; headless run; automation can run mic-setup.ps1 itself.
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"""; StatusMsg: "Setting up microphone support..."; Check: not WizardSilent
+; Microphone support is part of EVERY install (idempotent: skips if
+; VB-Cable is present). Silent-first via VB's VM-verified -i -h switches;
+; the interactive GUI fallback is only allowed when a user is present.
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"" -AllowGui"; StatusMsg: "Setting up microphone support..."; Check: not WizardSilent
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"""; StatusMsg: "Setting up microphone support..."; Check: WizardSilent
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\usb-setup.ps1"" -InstallDir ""{app}"""; StatusMsg: "Fetching platform-tools for USB mode..."; Tasks: usb
 
 [UninstallRun]
@@ -70,7 +70,7 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\u
 ; file locks before Inno deletes (taskkill /F returns before process death;
 ; without the delay the uninstall left locked files behind, VM-tested).
 ; ping not timeout.exe: timeout dies without console stdin (HANDOFF lesson).
-Filename: "{cmd}"; Parameters: "/c taskkill /F /IM CatCamTray.exe & taskkill /F /IM CatCamHost.exe & ping -n 3 127.0.0.1 > nul"; Flags: runhidden; RunOnceId: "KillProcs"
+Filename: "{cmd}"; Parameters: "/c taskkill /F /IM CatCamTray.exe & taskkill /F /IM CatCamHost.exe & taskkill /F /IM adb.exe & ping -n 3 127.0.0.1 > nul"; Flags: runhidden; RunOnceId: "KillProcs"
 Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn CatCam /f"; Flags: runhidden; RunOnceId: "DelTask"
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\CatCamSource.dll"""; Flags: runhidden; RunOnceId: "UnregDll"
 
