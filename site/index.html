@@ -83,7 +83,9 @@
   }
   h1 em { font-style: normal; color: var(--orange-deep); }
   .sub { font-size: 19px; color: var(--soft); max-width: 44ch; margin-bottom: 28px; }
-  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  /* The navbar is sticky and floats over the top ~70px of the viewport, so
+     the #download anchor must land below it, not under it. */
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; scroll-margin-top: 90px; }
   .req { font-size: 13.5px; color: var(--soft); }
 
   .mockwrap { grid-area: mock; position: relative; justify-self: center; }
