@@ -18,12 +18,18 @@ protocol changes, portrait/rotation pipeline, audio feed). Per GPL
 section 2a, this file records that the derived files were changed and
 when; per-file change headers are still to be added.
 
-Third-party components (not included in this repository)
---------------------------------------------------------
-- VB-Audio Virtual Cable (vb-audio.com): proprietary donationware used as
-  the microphone endpoint. NOT bundled, NOT redistributed; the installer
-  downloads it from the official site. Redistribution would require a
-  commercial license from VB-Audio.
+Third-party components
+----------------------
+- VB-Audio Virtual Cable (vb-audio.com): proprietary donationware by
+  Vincent Burel, used as the microphone endpoint. The official pack is
+  included UNMODIFIED at installer/payload/VBCABLE_Driver_Pack45.zip and
+  ships inside CatCamSetup.exe; its EULA permits copying/diffusing the
+  unmodified pack. It is NOT covered by this repository's GPL license.
+  As the EULA asks, in case of distribution:
+    1- The origin of VB-CABLE: www.vb-cable.com
+    2- VB-CABLE is a donationware, all participations are welcome.
+  (Integrating the pack into another installation procedure is the one
+  use the EULA gates on author agreement.)
 - Android Debug Bridge (adb): part of the Android SDK platform-tools,
   expected to be installed separately.
 - The Android app depends on AndroidX/Jetpack libraries fetched by Gradle.

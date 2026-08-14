@@ -3,15 +3,16 @@
 ; copies the runtime to Program Files (which LOCAL SERVICE can read, so the
 ; old icacls grant is unnecessary), registers the COM media source, creates
 ; the elevated logon task, sets up the microphone path as standard (VB-Audio
-; Virtual Cable, fetched from vb-audio.com, never bundled: their license
-; forbids redistribution) and optionally fetches Google platform-tools for
-; USB cable mode. Wi-Fi mode needs no cable and no adb.
+; Virtual Cable: the official UNMODIFIED pack ships in payload\, which their
+; EULA permits "as is" with attribution; mic-setup.ps1 carries the required
+; mentions and a pinned SHA256) and optionally fetches Google platform-tools
+; for USB cable mode. Wi-Fi mode needs no cable and no adb.
 ; Build: iscc CatCamSetup.iss   (output: Output\CatCamSetup.exe)
 
 [Setup]
 AppId={{7C1FA2E5-4B3D-4A80-9E6F-CATCAM000001}
 AppName=CatCam
-AppVersion=1.1.0
+AppVersion=1.2.0
 AppPublisher=Igor Yago
 AppPublisherURL=https://catcam.app
 AppSupportURL=https://github.com/igorfyago/CatCam
@@ -42,6 +43,9 @@ Source: "..\windows\probe.py";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE";                  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICE";                   DestDir: "{app}"; Flags: ignoreversion
 Source: "mic-setup.ps1";               DestDir: "{app}"; Flags: ignoreversion
+; The official VB-CABLE pack, byte-identical to VB-Audio's download ("as is"
+; per their EULA). mic-setup.ps1 installs from this copy; no network needed.
+Source: "payload\VBCABLE_Driver_Pack45.zip"; DestDir: "{app}\payload"; Flags: ignoreversion
 Source: "usb-setup.ps1";               DestDir: "{app}"; Flags: ignoreversion
 Source: "task-setup.ps1";              DestDir: "{app}"; Flags: ignoreversion
 Source: "catcam.ico";                  DestDir: "{app}"; Flags: ignoreversion

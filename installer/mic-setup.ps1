@@ -1,6 +1,13 @@
 # Microphone path: ensure VB-Audio Virtual Cable is installed. Proprietary
-# donationware, deliberately NOT bundled (redistribution needs a commercial
-# license): fetched from the official site at install time.
+# donationware by Vincent Burel; its EULA allows copying/diffusing the
+# UNMODIFIED pack "as is", so CatCam ships the official zip untouched at
+# payload\VBCABLE_Driver_Pack45.zip and installs from that local copy. The
+# official-site download is only a fallback for checkouts without the
+# payload. Both paths are pinned to the pack's SHA256: a driver installer
+# is not something to run on a hash mismatch.
+# Per the EULA, distribution must mention:
+#   1- The origin of VB-CABLE: www.vb-cable.com
+#   2- VB-CABLE is a donationware, all participations are welcome.
 #
 # Silent-first: VBCABLE_Setup_x64.exe accepts -i (install) -h (hidden),
 # undocumented but VM-verified (fresh Server 2025: exit 0 and the
@@ -8,21 +15,37 @@
 # attempt does not stick, fall back to VB-Audio's interactive installer,
 # but only when a user is present to click it (-AllowGui).
 param([switch]$AllowGui)
+
+$PackSha256 = 'B950E39F01AF1D04EA623C8F6D8EB9B6EA5C477C637295FABF20631C85116BFB'
+
 $cable = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue |
          Where-Object { $_.Name -match 'VB-Audio' }
 if ($cable) { Write-Host "VB-Cable already installed."; exit 0 }
-$zip = Join-Path $env:TEMP 'vbcable.zip'
-$dst = Join-Path $env:TEMP 'vbcable'
-$got = $false
-foreach ($u in @('https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip',
-                 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip')) {
-    try { Invoke-WebRequest $u -OutFile $zip -UseBasicParsing; $got = $true; break } catch {}
+
+Write-Host "Microphone endpoint: VB-CABLE by VB-Audio (www.vb-cable.com)."
+Write-Host "VB-CABLE is a donationware, all participations are welcome."
+
+$zip = $null
+$local = Join-Path $PSScriptRoot 'payload\VBCABLE_Driver_Pack45.zip'
+if (Test-Path $local) {
+    if ((Get-FileHash $local -Algorithm SHA256).Hash -eq $PackSha256) { $zip = $local }
+    else { Write-Host "Bundled VB-Cable pack failed its checksum; trying the official download." }
 }
-if (-not $got) {
+if (-not $zip) {
+    $dl = Join-Path $env:TEMP 'vbcable.zip'
+    try {
+        Invoke-WebRequest 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip' -OutFile $dl -UseBasicParsing
+        if ((Get-FileHash $dl -Algorithm SHA256).Hash -eq $PackSha256) { $zip = $dl }
+        else { Write-Host "Downloaded VB-Cable pack failed its checksum; not running it." }
+    } catch {}
+}
+if (-not $zip) {
     if ($AllowGui) { Start-Process 'https://vb-audio.com/Cable/' }
-    Write-Host "VB-Cable download failed: install manually from vb-audio.com/Cable."
+    Write-Host "No usable VB-Cable pack: install manually from vb-audio.com/Cable."
     exit 0
 }
+
+$dst = Join-Path $env:TEMP 'vbcable'
 Expand-Archive $zip $dst -Force
 $setup = Get-ChildItem $dst -Recurse -Filter 'VBCABLE_Setup_x64.exe' | Select-Object -First 1
 if (-not $setup) { Write-Host "VBCABLE_Setup_x64.exe not found in the pack."; exit 0 }
