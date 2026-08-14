@@ -1,0 +1,7 @@
+# Version manifest. PR target: microsoft/winget-pkgs under
+# manifests/i/IgorYago/CatCam/1.2.0/ · see README-winget.md
+PackageIdentifier: IgorYago.CatCam
+PackageVersion: 1.2.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

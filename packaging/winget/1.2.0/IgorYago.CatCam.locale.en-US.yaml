@@ -1,0 +1,24 @@
+PackageIdentifier: IgorYago.CatCam
+PackageVersion: 1.2.0
+PackageLocale: en-US
+Publisher: Igor Yago
+PublisherUrl: https://catcam.app
+PublisherSupportUrl: https://github.com/igorfyago/CatCam/issues
+PackageName: CatCam
+PackageUrl: https://catcam.app
+License: GPL-2.0
+LicenseUrl: https://github.com/igorfyago/CatCam/blob/master/LICENSE
+ShortDescription: Turn a spare Android phone or tablet into your PC's webcam, over Wi-Fi or USB.
+Description: |-
+  CatCam turns any Android 8+ phone or tablet into a Windows 11 webcam.
+  Wi-Fi or USB, switchable mid-stream; the devices find each other with no
+  IPs or pairing. Microphone included. No cloud, no accounts, no watermark;
+  video never leaves your network. Free and open source.
+Moniker: catcam
+Tags:
+  - webcam
+  - virtual-camera
+  - android
+  - open-source
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

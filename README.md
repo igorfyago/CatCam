@@ -82,8 +82,9 @@ has no cable.
 ## Requirements
 
 - Windows 11 22H2 or newer (the virtual camera API appeared there).
-- An Android 8+ device on the same network (or a USB cable; cable mode
-  needs USB debugging and `adb`, which the installer can fetch for you).
+- An Android 8+ phone or tablet on the same network (or a USB cable;
+  cable mode needs USB debugging and `adb`, which the installer can
+  fetch for you).
 - For the microphone: VB-Audio Virtual Cable (free donationware, by
   www.vb-cable.com; all participations are welcome). The official
   unmodified pack ships inside the installer and sets up automatically,
@@ -119,6 +120,10 @@ slightly longer version:
 Uninstall from Settings > Apps like anything else; it removes the task,
 the camera registration and every file (VB-Cable has its own
 uninstaller). The cat cannot be uninstalled.
+
+Something not working? [catcam.app/help.html](https://catcam.app/help.html)
+covers the six usual fixes, and Start menu > CatCam Diagnostics writes a
+zip for a [GitHub issue](https://github.com/igorfyago/CatCam/issues).
 
 Prefer the manual path? The release zip still ships
 `installer\install.ps1` for elevated-PowerShell enjoyers, and

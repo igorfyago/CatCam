@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CatCam vs DroidCam vs Iriun vs Camo</title>
+<meta name="description" content="Phone-as-webcam apps compared honestly: price models, watermarks, caps, accounts. CatCam is the fully free, open-source one.">
+<link rel="icon" href="logo512.png">
+<meta name="theme-color" content="#FFF6EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
+<style>
+  :root {
+    --cream: #FFF6EA; --cream2: #FFF0DC; --peach: #FFE3C2;
+    --ink: #2A2622; --soft: #7A6F63; --line: #EFE2CE;
+    --orange: #F59E4C; --orange-deep: #E8862F; --card: #FFFFFF;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--cream); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; }
+  a { color: inherit; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+  nav { position: sticky; top: 12px; z-index: 50; max-width: 860px; margin: 12px auto 0; padding: 0 12px; }
+  .navbar { display: flex; align-items: center; gap: 12px; background: rgba(255, 252, 246, .8); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
+  .navbar img { width: 30px; height: 30px; }
+  .navbar .brand { font-weight: 800; font-size: 18px; letter-spacing: -.02em; text-decoration: none; }
+  .navbar .spacer { flex: 1; }
+  .navbar a.gh { font-size: 14px; color: var(--soft); text-decoration: none; }
+  .navbar a.gh:hover { color: var(--ink); }
+  h1 { font-size: clamp(30px, 4.5vw, 44px); letter-spacing: -.03em; font-weight: 800; margin: 48px 0 8px; }
+  h1 em { font-style: normal; color: var(--orange-deep); }
+  .lead { color: var(--soft); margin-bottom: 26px; max-width: 62ch; }
+  .tablewrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 20px; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--soft); }
+  tbody tr:last-child td { border-bottom: none; }
+  td b { font-weight: 700; }
+  .you { background: linear-gradient(90deg, var(--cream2), transparent); }
+  .note { color: var(--soft); font-size: 13.5px; margin: 14px 4px 0; max-width: 70ch; }
+  .cta { margin: 28px 0 0; }
+  .btn { display: inline-block; border-radius: 999px; text-decoration: none; font-weight: 700; font-size: 15px; padding: 12px 22px; background: var(--ink); color: #fff; }
+  footer { padding: 40px 0 48px; text-align: center; color: var(--soft); font-size: 14px; }
+  footer a { color: var(--ink); }
+  html[data-theme="dark"] {
+    --cream: #171310; --cream2: #201A14; --peach: #3A2812;
+    --ink: #F2E9DC; --soft: #B3A695; --line: #3A322A;
+    --orange: #F59E4C; --orange-deep: #F5A45C; --card: #241E17;
+  }
+  html[data-theme="dark"] .navbar { background: rgba(28, 23, 18, .82); }
+  html[data-theme="dark"] .btn { background: var(--orange); color: #201505; }
+</style>
+<script>
+  document.documentElement.dataset.theme =
+    localStorage.getItem("theme") ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
+</head>
+<body>
+
+<nav>
+  <div class="navbar">
+    <img src="logo512.png" alt="">
+    <a class="brand" href="/">CatCam</a>
+    <span class="spacer"></span>
+    <a class="gh" href="/help.html">Help</a>
+    <a class="gh" href="https://github.com/igorfyago/CatCam">GitHub</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <h1>How CatCam <em>compares</em></h1>
+  <p class="lead">DroidCam, Iriun and Camo are good, mature products; people use
+  them happily. The difference is the model. CatCam has no paid tier, so there
+  is nothing to unlock: no watermark to remove, no resolution to buy back, no
+  subscription. The code is public.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th></th><th>Price</th><th>Watermark</th><th>What free gets you</th><th>Account or cloud</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        <tr class="you">
+          <td><b>CatCam</b></td>
+          <td>Free, entirely</td>
+          <td>None</td>
+          <td>Everything: Wi-Fi + USB, mic, zoom, night mode</td>
+          <td>None, video stays on your network</td>
+          <td>Open, GPL-2.0</td>
+        </tr>
+        <tr>
+          <td><b>DroidCam</b></td>
+          <td>Free at SD, Pro in-app purchase</td>
+          <td>On HD until Pro</td>
+          <td>Standard-definition video, core features</td>
+          <td>No account needed</td>
+          <td>Closed</td>
+        </tr>
+        <tr>
+          <td><b>Iriun</b></td>
+          <td>Free, one-time Pro unlock</td>
+          <td>Small logo until Pro</td>
+          <td>All connection modes, watermarked video</td>
+          <td>No account needed</td>
+          <td>Closed</td>
+        </tr>
+        <tr>
+          <td><b>Camo</b></td>
+          <td>Free tier, Pro subscription or lifetime</td>
+          <td>Overlay controls sit in Pro</td>
+          <td>Up to 720p</td>
+          <td>Optional</td>
+          <td>Closed</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Checked 2026-08 against each vendor's own site; details move,
+  their pages are authoritative. Fairness note: all three support iPhone and
+  macOS, which CatCam does not. CatCam is Windows 11 + Android, and younger.</p>
+
+  <div class="cta">
+    <a class="btn" href="/#download">Get CatCam</a>
+  </div>
+</div>
+
+<footer>
+  <a href="/">CatCam</a> · <a href="/help.html">help</a> ·
+  <a href="privacy.html">privacy</a> · free and open source (GPL-2.0)
+</footer>
+</body>
+</html>

@@ -48,6 +48,7 @@ Source: "mic-setup.ps1";               DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\VBCABLE_Driver_Pack45.zip"; DestDir: "{app}\payload"; Flags: ignoreversion
 Source: "usb-setup.ps1";               DestDir: "{app}"; Flags: ignoreversion
 Source: "task-setup.ps1";              DestDir: "{app}"; Flags: ignoreversion
+Source: "catcam-diag.ps1";             DestDir: "{app}"; Flags: ignoreversion
 Source: "catcam.ico";                  DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
@@ -55,6 +56,8 @@ Name: "usb"; Description: "USB cable mode (downloads Google platform-tools; Wi-F
 
 [Icons]
 Name: "{autoprograms}\CatCam"; Filename: "{app}\CatCamTray.exe"; IconFilename: "{app}\catcam.ico"
+; Support path: writes a diagnostics zip to the Desktop for GitHub issues.
+Name: "{autoprograms}\CatCam Diagnostics"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\catcam-diag.ps1"""; IconFilename: "{app}\catcam.ico"
 
 [Run]
 Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\CatCamSource.dll"""; StatusMsg: "Registering the virtual camera..."

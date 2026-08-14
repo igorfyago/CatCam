@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CatCam · help</title>
+<meta name="description" content="CatCam troubleshooting: the phone can't find the PC, no camera in Teams or Zoom, no microphone, USB mode, diagnostics.">
+<link rel="icon" href="logo512.png">
+<meta name="theme-color" content="#FFF6EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
+<style>
+  :root {
+    --cream: #FFF6EA; --cream2: #FFF0DC; --peach: #FFE3C2;
+    --ink: #2A2622; --soft: #7A6F63; --line: #EFE2CE;
+    --orange: #F59E4C; --orange-deep: #E8862F; --card: #FFFFFF;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--cream); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; }
+  a { color: inherit; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+  nav { position: sticky; top: 12px; z-index: 50; max-width: 780px; margin: 12px auto 0; padding: 0 12px; }
+  .navbar { display: flex; align-items: center; gap: 12px; background: rgba(255, 252, 246, .8); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
+  .navbar img { width: 30px; height: 30px; }
+  .navbar .brand { font-weight: 800; font-size: 18px; letter-spacing: -.02em; text-decoration: none; }
+  .navbar .spacer { flex: 1; }
+  .navbar a.gh { font-size: 14px; color: var(--soft); text-decoration: none; }
+  .navbar a.gh:hover { color: var(--ink); }
+  h1 { font-size: clamp(30px, 4.5vw, 44px); letter-spacing: -.03em; font-weight: 800; margin: 48px 0 8px; }
+  h1 em { font-style: normal; color: var(--orange-deep); }
+  .lead { color: var(--soft); margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 22px 24px; margin-bottom: 14px; scroll-margin-top: 90px; }
+  .card h2 { font-size: 19px; letter-spacing: -.01em; margin-bottom: 8px; }
+  .card p, .card li { color: var(--soft); font-size: 15px; }
+  .card ul { margin: 6px 0 0 20px; }
+  .card b { color: var(--ink); font-weight: 650; }
+  .card code { background: var(--cream2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 13.5px; }
+  footer { padding: 40px 0 48px; text-align: center; color: var(--soft); font-size: 14px; }
+  footer a { color: var(--ink); }
+  html[data-theme="dark"] {
+    --cream: #171310; --cream2: #201A14; --peach: #3A2812;
+    --ink: #F2E9DC; --soft: #B3A695; --line: #3A322A;
+    --orange: #F59E4C; --orange-deep: #F5A45C; --card: #241E17;
+  }
+  html[data-theme="dark"] .navbar { background: rgba(28, 23, 18, .82); }
+</style>
+<script>
+  document.documentElement.dataset.theme =
+    localStorage.getItem("theme") ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
+</head>
+<body>
+
+<nav>
+  <div class="navbar">
+    <img src="logo512.png" alt="">
+    <a class="brand" href="/">CatCam</a>
+    <span class="spacer"></span>
+    <a class="gh" href="/compare.html">Compare</a>
+    <a class="gh" href="https://github.com/igorfyago/CatCam">GitHub</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <h1>When it <em>doesn't work</em></h1>
+  <p class="lead">Six problems cover nearly everything. Start with the one that
+  matches, and if none do, jump to diagnostics at the bottom.</p>
+
+  <div class="card" id="find">
+    <h2>The phone or tablet can't find the PC</h2>
+    <ul>
+      <li><b>Same network, really.</b> The device and the PC must be on the same
+      Wi-Fi. A phone on mobile data, or on the 5&nbsp;GHz network while the PC is
+      wired to another subnet, will not connect.</li>
+      <li><b>Guest and hotel Wi-Fi block this.</b> Those networks isolate devices
+      from each other on purpose (the router calls it AP or client isolation),
+      so the announcement never arrives. Use your main home network, or skip
+      Wi-Fi entirely with a USB cable.</li>
+      <li><b>VPN on the PC.</b> A VPN can swallow local traffic. Pause it and
+      retry.</li>
+      <li><b>The firewall prompt.</b> If Windows once asked about CatCamHost and
+      you clicked Cancel, allow it again: Windows Security &gt; Firewall &amp;
+      network protection &gt; Allow an app through firewall &gt; CatCamHost on
+      Private networks.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="nocam">
+    <h2>No CatCam camera in Teams, Zoom, Meet</h2>
+    <ul>
+      <li><b>Windows 11 22H2 or newer</b> is required; the virtual camera API
+      does not exist before that.</li>
+      <li><b>Restart the calling app.</b> Apps list cameras at launch, so a
+      Teams that was open during install has an old list.</li>
+      <li><b>Check the tray.</b> The cat icon should be in the system tray;
+      if not, start CatCam from the Start menu.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="frozen">
+    <h2>The camera is listed but black or frozen</h2>
+    <ul>
+      <li>On the device, the big button should say it is streaming; tap it once
+      if not.</li>
+      <li>Tray icon &gt; restart CatCam, then reselect the camera in the app.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="mic">
+    <h2>No CatCam microphone</h2>
+    <ul>
+      <li><b>Reboot once after the first install.</b> The audio driver finishes
+      registering then; this is one-time.</li>
+      <li>In your calling app, pick <b>CABLE Output (VB-Audio Virtual
+      Cable)</b> as the microphone. The name is theirs, the audio is your
+      device's mic.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="usb">
+    <h2>USB cable mode</h2>
+    <ul>
+      <li>The cable path needs <b>USB debugging</b> on the device: Settings &gt;
+      About &gt; tap Build number 7 times, then Settings &gt; Developer options
+      &gt; USB debugging.</li>
+      <li>The installer's USB checkbox fetches the Google platform-tools it
+      uses; if you skipped it, run the installer again with the box ticked.</li>
+      <li>First connection: the device shows an "Allow USB debugging?" prompt,
+      accept it.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="diag">
+    <h2>Still stuck: diagnostics</h2>
+    <p>Start menu &gt; <b>CatCam Diagnostics</b> writes a zip to your Desktop
+    with CatCam's logs and the network basics (local IPs, PC name; nothing is
+    sent anywhere). Attach it to an issue at
+    <a href="https://github.com/igorfyago/CatCam/issues">github.com/igorfyago/CatCam/issues</a>
+    and describe what you clicked. Issues get read.</p>
+  </div>
+</div>
+
+<footer>
+  <a href="/">CatCam</a> · <a href="/compare.html">how it compares</a> ·
+  <a href="privacy.html">privacy</a> · free and open source (GPL-2.0)
+</footer>
+</body>
+</html>
