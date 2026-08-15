@@ -426,13 +426,21 @@ static LRESULT CALLBACK PreviewWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 static void OpenPreview() {
     if (prevWnd) { ShowWindow(prevWnd, SW_SHOW); SetForegroundWindow(prevWnd); return; }
-    UINT32 w = 720, h = 1280;
-    if (EnsureSharedMem() && shm->width && shm->height) { w = shm->width; h = shm->height; }
-    RECT rc{ 0, 0, (LONG)w / 2, (LONG)h / 2 };
-    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    // Open docked to the RIGHT HALF of the work area of the monitor the
+    // cursor is on (the one the tray was clicked on): the preview lives
+    // beside whatever is being worked on, no dragging. The frame is
+    // letterboxed inside whatever shape that half is (WM_PAINT). Snap
+    // and drag still work afterwards, this is only the opening geometry.
+    POINT cur; GetCursorPos(&cur);
+    HMONITOR mon = MonitorFromPoint(cur, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{ sizeof(mi) };
+    RECT wa{ 0, 0, 1280, 720 };
+    if (GetMonitorInfoW(mon, &mi)) wa = mi.rcWork;
+    else SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    const LONG half = (wa.right - wa.left) / 2;
     prevWnd = CreateWindowW(L"CatCamPreviewWnd", L"CatCam preview",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-        rc.right - rc.left, rc.bottom - rc.top,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        wa.left + half, wa.top, wa.right - (wa.left + half), wa.bottom - wa.top,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     // Title-bar/taskbar mascot (built once from the tray art, no dot).
     static HICON prevIcon = nullptr;
