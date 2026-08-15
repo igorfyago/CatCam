@@ -34,6 +34,7 @@ SolidCompression=yes
 Source: "..\windows\CatCamHost.exe";   DestDir: "{app}"; Flags: ignoreversion
 Source: "..\windows\CatCamSource.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\windows\CatCamTray.exe";   DestDir: "{app}"; Flags: ignoreversion
+Source: "..\windows\CatCamAudio.exe";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\windows\catcam-boot.bat";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\windows\camctl.bat";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\windows\adbfwd.bat";       DestDir: "{app}"; Flags: ignoreversion
@@ -50,6 +51,12 @@ Source: "usb-setup.ps1";               DestDir: "{app}"; Flags: ignoreversion
 Source: "task-setup.ps1";              DestDir: "{app}"; Flags: ignoreversion
 Source: "catcam-diag.ps1";             DestDir: "{app}"; Flags: ignoreversion
 Source: "catcam.ico";                  DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+; Written by CatCamAudio.exe (cable pin, endpoint originals, ownership) and
+; the host (stream dims). Deleted at uninstall AFTER [UninstallRun], so
+; restore still finds what it needs.
+Root: HKLM; Subkey: "SOFTWARE\CatCam"; Flags: uninsdeletekey
 
 [Tasks]
 Name: "usb"; Description: "USB cable mode (downloads Google platform-tools; Wi-Fi mode needs no cable)"; Flags: unchecked
@@ -70,6 +77,13 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\t
 ; the interactive GUI fallback is only allowed when a user is present.
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"" -AllowGui"; StatusMsg: "Setting up microphone support..."; Check: not WizardSilent
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\mic-setup.ps1"""; StatusMsg: "Setting up microphone support..."; Check: WizardSilent
+; Make the cable's endpoints read as CatCam's: "CatCam Microphone" (what you
+; pick in Teams), "CatCam Mic Feed" (what the host writes into), the unused
+; 16ch endpoints disabled, the feed's endpoint ID pinned for the host.
+; Endpoint names/states are Windows-side per-endpoint settings (the Sound
+; panel's own Rename/Disable); VB-Cable's driver is untouched. Idempotent;
+; a no-op with a message if VB-Cable is not present.
+Filename: "{app}\CatCamAudio.exe"; Parameters: "setup"; StatusMsg: "Naming the CatCam microphone..."; Flags: runhidden
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\usb-setup.ps1"" -InstallDir ""{app}"""; StatusMsg: "Fetching platform-tools for USB mode..."; Tasks: usb
 
 [UninstallRun]
@@ -80,6 +94,8 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\u
 Filename: "{cmd}"; Parameters: "/c taskkill /F /IM CatCamTray.exe & taskkill /F /IM CatCamHost.exe & taskkill /F /IM adb.exe & ping -n 3 127.0.0.1 > nul"; Flags: runhidden; RunOnceId: "KillProcs"
 Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn CatCam /f"; Flags: runhidden; RunOnceId: "DelTask"
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\CatCamSource.dll"""; Flags: runhidden; RunOnceId: "UnregDll"
+; Give VB-Cable its own names back and re-enable the 16ch endpoints.
+Filename: "{app}\CatCamAudio.exe"; Parameters: "restore"; Flags: runhidden; RunOnceId: "AudioRestore"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

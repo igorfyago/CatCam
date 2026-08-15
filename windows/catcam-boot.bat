@@ -8,6 +8,12 @@ call "%~dp0catcam-env.bat"
 set ADB=%CATCAM_ADB%
 set SER=%SERFLAG%
 
+REM Name the VB-Cable endpoints as CatCam's (idempotent, quiet). Here as
+REM well as in the installer because a fresh VB-Cable install can need a
+REM reboot before its endpoints exist; this task runs elevated at logon.
+if exist "%~dp0CatCamAudio.exe" "%~dp0CatCamAudio.exe" setup >nul 2>&1
+REM (it appends to audio.log next to the exe; nothing to see here)
+
 REM No adb installed (Wi-Fi-only setup): nothing to wait for or forward.
 if not exist "%ADB%" goto start
 

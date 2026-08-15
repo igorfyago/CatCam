@@ -18,9 +18,20 @@ param([switch]$AllowGui)
 
 $PackSha256 = 'B950E39F01AF1D04EA623C8F6D8EB9B6EA5C477C637295FABF20631C85116BFB'
 
+# Exact product: 'VB-Audio' alone also matches Voicemeeter, Hi-Fi Cable and
+# Cable A/B, on which VB-Cable itself is absent and the mic would never exist.
 $cable = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue |
-         Where-Object { $_.Name -match 'VB-Audio' }
-if ($cable) { Write-Host "VB-Cable already installed."; exit 0 }
+         Where-Object { $_.Name -match 'VB-Audio Virtual Cable' }
+# Ownership record for CatCamAudio.exe: a cable the user already had is not
+# CatCam's to rename or trim; one CatCam installs is. Written once.
+$own = 'HKLM:\SOFTWARE\CatCam'
+function Set-CableOwner([int]$ours) {
+    if (-not (Test-Path $own)) { New-Item $own -Force | Out-Null }
+    if ($null -eq (Get-ItemProperty $own -Name CableInstalledByCatCam -ErrorAction SilentlyContinue)) {
+        New-ItemProperty $own -Name CableInstalledByCatCam -Value $ours -PropertyType DWord | Out-Null
+    }
+}
+if ($cable) { Write-Host "VB-Cable already installed."; Set-CableOwner 0; exit 0 }
 
 Write-Host "Microphone endpoint: VB-CABLE by VB-Audio (www.vb-cable.com)."
 Write-Host "VB-CABLE is a donationware, all participations are welcome."
@@ -52,11 +63,12 @@ if (-not $setup) { Write-Host "VBCABLE_Setup_x64.exe not found in the pack."; ex
 Start-Process $setup.FullName -ArgumentList '-i','-h' -Wait
 Start-Sleep -Seconds 6
 $dev = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue |
-       Where-Object { $_.Name -match 'VB-Audio' }
-if ($dev) { Write-Host "VB-Cable installed silently."; exit 0 }
+       Where-Object { $_.Name -match 'VB-Audio Virtual Cable' }
+if ($dev) { Write-Host "VB-Cable installed silently."; Set-CableOwner 1; exit 0 }
 if ($AllowGui) {
     Write-Host "Silent install did not stick: opening VB-Audio's installer, click 'Install Driver'."
     Start-Process $setup.FullName -Wait
+    Set-CableOwner 1
 } else {
     Write-Host "Silent install did not stick; run mic-setup.ps1 -AllowGui interactively."
 }

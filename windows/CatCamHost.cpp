@@ -407,9 +407,29 @@ static bool ContainsI(const wchar_t* hay, const wchar_t* needle) {
 // The exclude matters: VB-Cable enumerates its 2ch render endpoint as
 // "Speakers (VB-Audio Virtual Cable)" on this box (not "CABLE Input") plus
 // a "CABLE In 16 Ch" sibling, so match the product name, skip the 16 Ch.
+// The installer (CatCamAudio.exe setup) pins the exact VB-Cable render
+// endpoint ID under HKLM\SOFTWARE\CatCam\CableRenderId after renaming it
+// "CatCam Mic Feed". Prefer that: it survives any rename, and it can never
+// pick a different cable on a machine with several. Falls back to the
+// name match (the adapter name in parentheses still says VB-Audio).
+static HRESULT FindRenderPinned(IMMDeviceEnumerator* en, Microsoft::WRL::ComPtr<IMMDevice>* out) {
+    wchar_t id[256] = L""; DWORD cb = sizeof(id);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\CatCam", L"CableRenderId",
+            RRF_RT_REG_SZ, nullptr, id, &cb) != ERROR_SUCCESS || !id[0])
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    Microsoft::WRL::ComPtr<IMMDevice> d;
+    HRESULT hr = en->GetDevice(id, &d);
+    if (FAILED(hr)) return hr;
+    DWORD st = 0;
+    if (FAILED(d->GetState(&st)) || st != DEVICE_STATE_ACTIVE) return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+    *out = d;
+    return S_OK;
+}
+
 static HRESULT FindRenderByName(IMMDeviceEnumerator* en, const wchar_t* name,
                                 const wchar_t* excl,
                                 Microsoft::WRL::ComPtr<IMMDevice>* out) {
+    if (SUCCEEDED(FindRenderPinned(en, out))) return S_OK;
     Microsoft::WRL::ComPtr<IMMDeviceCollection> col;
     HRESULT hr = en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col);
     if (FAILED(hr)) return hr;
@@ -420,9 +440,12 @@ static HRESULT FindRenderByName(IMMDeviceEnumerator* en, const wchar_t* name,
         Microsoft::WRL::ComPtr<IPropertyStore> ps;
         if (FAILED(d->OpenPropertyStore(STGM_READ, &ps))) continue;
         PROPVARIANT v; PropVariantInit(&v);
+        // excl covers both spellings VB has used ("16 Ch" adapter suffix,
+        // "CABLE In 16ch" endpoint desc); a substring miss here would feed
+        // the tablet's mic into the 16-channel cable and Teams hears nothing.
         bool match = SUCCEEDED(ps->GetValue(PKEY_Device_FriendlyName, &v)) &&
                      v.vt == VT_LPWSTR && ContainsI(v.pwszVal, name) &&
-                     !(excl && ContainsI(v.pwszVal, excl));
+                     !(excl && (ContainsI(v.pwszVal, excl) || ContainsI(v.pwszVal, L"16ch")));
         PropVariantClear(&v);
         if (match) { *out = d; return S_OK; }
     }

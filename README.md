@@ -133,7 +133,7 @@ slightly longer version:
    [CatCam-android.apk](https://github.com/igorfyago/CatCam/releases/latest/download/CatCam-android.apk)
    and press the big button.
 3. Same Wi-Fi: they find each other. Pick "CatCam" as the camera (and
-   "CABLE Output (VB-Audio Virtual Cable)" as the microphone) in your
+   "CatCam Microphone" as the microphone) in your
    calling app.
 4. Point the device at the cat. Or at yourself. The software does not
    judge, though the cat might.

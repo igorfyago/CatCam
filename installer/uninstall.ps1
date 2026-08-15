@@ -17,6 +17,8 @@ taskkill /F /IM CatCamHost.exe  2>$null | Out-Null
 # released before unregistering.
 net stop FrameServer /y | Out-Null
 & regsvr32 /u /s (Join-Path $win 'CatCamSource.dll')
+$audio = Join-Path $win 'CatCamAudio.exe'
+if (Test-Path $audio) { & $audio restore }   # VB-Cable gets its own names back
 net start FrameServer | Out-Null
 
 Write-Host "CatCam removed: task deleted, processes stopped, COM source unregistered."

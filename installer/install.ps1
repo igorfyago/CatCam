@@ -42,7 +42,7 @@ if ($missing) {
 # 2. VB-Cable (microphone endpoint)
 if (-not $SkipAudio) {
     $cable = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue |
-             Where-Object { $_.Name -match 'VB-Audio' }
+             Where-Object { $_.Name -match 'VB-Audio Virtual Cable' }
     if ($cable) {
         Write-Host "VB-Cable already installed: $($cable[0].Name)"
     } else {
@@ -98,8 +98,13 @@ if (Test-Path $AdbPath) {
     Write-Host "adb NOT found at $AdbPath (needed for USB transport and remote control)." -ForegroundColor Yellow
 }
 
+# Name the cable's endpoints as CatCam's and pin the feed for the host
+# (see CatCamAudio.cpp; no-op with a message if VB-Cable is absent).
+$audio = Join-Path $win 'CatCamAudio.exe'
+if (Test-Path $audio) { & $audio setup }
+
 Start-Process $boot
 Write-Host ""
-Write-Host "Done. Pick 'CatCam' as camera and 'CABLE Output (VB-Audio Virtual"
-Write-Host "Cable)' as microphone in your calling app. The tray icon's dot:"
+Write-Host "Done. Pick 'CatCam' as camera and 'CatCam Microphone' as microphone"
+Write-Host "in your calling app. The tray icon's dot:"
 Write-Host "green = streaming, yellow = waiting for device, red = host down."

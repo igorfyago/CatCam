@@ -41,8 +41,18 @@ $report += "== Firewall rules mentioning CatCam =="
 Get-NetFirewallRule | Where-Object DisplayName -match 'CatCam' |
     ForEach-Object { $report += "{0}: {1}, {2}, {3}" -f $_.DisplayName, $_.Direction, $_.Action, $_.Enabled }
 
+# Audio endpoints as Windows sees them + the pin, so a "no microphone"
+# report carries the answer.
+$audioExe = Join-Path $app 'CatCamAudio.exe'
+if (Test-Path $audioExe) {
+    $report += "== Audio endpoints (CatCamAudio list) =="
+    $report += (& $audioExe list 2>&1)
+    $report += "== HKLM\SOFTWARE\CatCam =="
+    $report += (reg query HKLM\SOFTWARE\CatCam /s 2>&1)
+}
+
 $report -join "`r`n" | Set-Content (Join-Path $work 'report.txt')
-foreach ($log in @((Join-Path $app 'tray.log'), (Join-Path $app 'host.log'), 'C:\CatCam.log')) {
+foreach ($log in @((Join-Path $app 'tray.log'), (Join-Path $app 'host.log'), (Join-Path $app 'audio.log'), 'C:\CatCam.log')) {
     if (Test-Path $log) { Copy-Item $log $work }
 }
 
