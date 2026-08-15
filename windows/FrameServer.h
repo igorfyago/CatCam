@@ -31,7 +31,13 @@ struct ControlBlock
     UINT32  tabletState;
     UINT32  tabletOnDemand;
     UINT64  hostBeat;
-    UINT8   reserved[64 - 40];
+    // Tray -> host command mailbox + tablet tuning (host/tray only; this
+    // DLL touches nothing past hostBeat).
+    UINT32  cmdSeq;
+    char    cmd[15];
+    UINT8   tuneFlags;
+    INT16   zoomX100;
+    INT8    ev, tone;
 };
 #pragma pack(pop)
 #define CONTROL_MAGIC 0x4C544343u   // "CCTL" little-endian

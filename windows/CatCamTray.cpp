@@ -47,6 +47,16 @@
 #define ID_TRAY_CAMSTOP  1007
 #define ID_TRAY_MONITOR  1008
 #define ID_TRAY_WIFI     1009
+#define ID_CAM_ZOOMIN    1101
+#define ID_CAM_ZOOMOUT   1102
+#define ID_CAM_EVUP      1103
+#define ID_CAM_EVDOWN    1104
+#define ID_CAM_WARMER    1105
+#define ID_CAM_COOLER    1106
+#define ID_CAM_DAY       1107
+#define ID_CAM_NIGHT     1108
+#define ID_CAM_FOCUSLOCK 1109
+#define ID_CAM_FOCUSAUTO 1110
 #define IDT_TICK         42
 #define IDT_PREVIEW      43
 
@@ -91,7 +101,11 @@ struct ControlBlock {
     UINT32 tabletState;      // 0 none, 1 READY (camera off), 2 live
     UINT32 tabletOnDemand;
     UINT64 hostBeat;
-    UINT8  reserved[64 - 40];
+    UINT32 cmdSeq;           // tray -> host mailbox (see host)
+    char   cmd[15];
+    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 focus supported, bit3 EV supported
+    INT16  zoomX100;
+    INT8   ev, tone;
 };
 #pragma pack(pop)
 static HANDLE hCtrlMap = nullptr;
@@ -105,6 +119,20 @@ static bool EnsureControl() {
 }
 static bool TabletReadyOnDemand() {
     return EnsureControl() && ctrl->tabletOnDemand && ctrl->tabletState == 1;
+}
+static bool TabletConnected() { return EnsureControl() && ctrl->tabletState != 0; }
+static void Log(const char* fmt, ...);   // defined below
+
+// Camera menu -> tablet, over the wire (works on Wi-Fi, no adb): drop the
+// verb in the mailbox, the host forwards it. Same words the tablet's
+// 0x10 command packet understands.
+static void SendTablet(const char* verb) {
+    if (!EnsureControl()) return;
+    char buf[15] = {};
+    strncpy_s(buf, verb, _TRUNCATE);
+    memcpy((void*)ctrl->cmd, buf, 15);
+    InterlockedIncrement((volatile LONG*)&ctrl->cmdSeq);
+    Log("camera: %s", verb);
 }
 static UINT64 lastIdx = 0;
 static ULONGLONG lastIdxChange = 0;
@@ -674,9 +702,43 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, ID_TRAY_PREVIEW, L"Live preview");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, ID_TRAY_FLIP, L"Flip camera (front/back)");
-            AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTART, L"Start tablet camera");
-            AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTOP, L"Stop tablet camera");
+            // Camera submenu: live values from the tablet's hello, each item
+            // one wire command. Greyed as a whole until a tablet is connected.
+            {
+                HMENU cam = CreatePopupMenu();
+                const bool on = TabletConnected();
+                const UINT en = on ? MF_STRING : (MF_STRING | MF_GRAYED);
+                wchar_t t[64];
+                const int zx = on ? ctrl->zoomX100 : 100;
+                swprintf_s(t, L"Zoom in\t%d.%02dx", zx / 100, zx % 100);
+                AppendMenuW(cam, en, ID_CAM_ZOOMIN, t);
+                AppendMenuW(cam, en, ID_CAM_ZOOMOUT, L"Zoom out");
+                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
+                const bool evOk = on && (ctrl->tuneFlags & 8);
+                swprintf_s(t, L"Brighter\tEV %+d", on ? (int)ctrl->ev : 0);
+                AppendMenuW(cam, evOk ? MF_STRING : (MF_STRING | MF_GRAYED), ID_CAM_EVUP, t);
+                AppendMenuW(cam, evOk ? MF_STRING : (MF_STRING | MF_GRAYED), ID_CAM_EVDOWN, L"Darker");
+                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
+                swprintf_s(t, L"Warmer\ttone %+d", on ? (int)ctrl->tone : 0);
+                AppendMenuW(cam, en, ID_CAM_WARMER, t);
+                AppendMenuW(cam, en, ID_CAM_COOLER, L"Cooler");
+                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
+                const bool day = on && (ctrl->tuneFlags & 1);
+                AppendMenuW(cam, en | (day ? MF_CHECKED : 0), ID_CAM_DAY, L"Day");
+                AppendMenuW(cam, en | (!day && on ? MF_CHECKED : 0), ID_CAM_NIGHT, L"Night");
+                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
+                const bool afOk = on && (ctrl->tuneFlags & 4);
+                const bool afLocked = on && (ctrl->tuneFlags & 2);
+                AppendMenuW(cam, (afOk ? MF_STRING : (MF_STRING | MF_GRAYED)) | (afLocked ? MF_CHECKED : 0),
+                    ID_CAM_FOCUSLOCK, afOk ? L"Focus: lock here" : L"Focus: lock (fixed-focus camera)");
+                AppendMenuW(cam, (afOk ? MF_STRING : (MF_STRING | MF_GRAYED)) | (afOk && !afLocked ? MF_CHECKED : 0),
+                    ID_CAM_FOCUSAUTO, L"Focus: auto");
+                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(cam, MF_STRING, ID_TRAY_FLIP, L"Flip camera (front/back)");
+                AppendMenuW(menu, MF_POPUP, (UINT_PTR)cam, L"Camera");
+            }
+            AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTART, L"Turn tablet camera on");
+            AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTOP, L"Turn tablet camera off");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING | (WifiEnabled() ? MF_CHECKED : 0),
                 ID_TRAY_WIFI, L"Wi-Fi mode (no cable)");
@@ -693,9 +755,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == ID_TRAY_PREVIEW)  OpenPreview();
-        if (LOWORD(wp) == ID_TRAY_FLIP)     RunCamCtl(L"flip");
-        if (LOWORD(wp) == ID_TRAY_CAMSTART) RunCamCtl(L"start");
-        if (LOWORD(wp) == ID_TRAY_CAMSTOP)  RunCamCtl(L"stop");
+        // Flip/on/off: over the wire when a tablet is connected (Wi-Fi or
+        // USB alike), the adb path only as the cold-start fallback.
+        if (LOWORD(wp) == ID_TRAY_FLIP)     { if (TabletConnected()) SendTablet("flip");  else RunCamCtl(L"flip"); }
+        if (LOWORD(wp) == ID_TRAY_CAMSTART) { if (TabletConnected()) SendTablet("start"); else RunCamCtl(L"start"); }
+        if (LOWORD(wp) == ID_TRAY_CAMSTOP)  { if (TabletConnected()) SendTablet("stop");  else RunCamCtl(L"stop"); }
+        if (LOWORD(wp) == ID_CAM_ZOOMIN)    SendTablet("zoom+");
+        if (LOWORD(wp) == ID_CAM_ZOOMOUT)   SendTablet("zoom-");
+        if (LOWORD(wp) == ID_CAM_EVUP)      SendTablet("ev+");
+        if (LOWORD(wp) == ID_CAM_EVDOWN)    SendTablet("ev-");
+        if (LOWORD(wp) == ID_CAM_WARMER)    SendTablet("tone+");
+        if (LOWORD(wp) == ID_CAM_COOLER)    SendTablet("tone-");
+        if (LOWORD(wp) == ID_CAM_DAY)       SendTablet("day");
+        if (LOWORD(wp) == ID_CAM_NIGHT)     SendTablet("night");
+        if (LOWORD(wp) == ID_CAM_FOCUSLOCK) SendTablet("focus lock");
+        if (LOWORD(wp) == ID_CAM_FOCUSAUTO) SendTablet("focus auto");
         if (LOWORD(wp) == ID_TRAY_WIFI) {
             const bool on = !WifiEnabled();
             SetWifiEnabled(on);

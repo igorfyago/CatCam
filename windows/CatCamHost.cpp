@@ -70,7 +70,15 @@ struct ControlBlock {
     UINT32 tabletState;      // 0 none, 1 READY (camera off), 2 live
     UINT32 tabletOnDemand;   // 1 = PC may drive the camera
     UINT64 hostBeat;
-    UINT8  reserved[64 - 40];
+    // Tray -> host command mailbox: tray writes cmd then bumps cmdSeq; the
+    // host forwards it to the tablet over the wire. Same vocabulary as the
+    // tablet's 0x10 command packet.
+    UINT32 cmdSeq;
+    char   cmd[15];
+    // Tablet's live tuning, from its hello: for the tray's Camera menu.
+    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 focus supported, bit3 EV supported
+    INT16  zoomX100;
+    INT8   ev, tone;
 };
 #pragma pack(pop)
 static const UINT32 CONTROL_MAGIC = 0x4C544343u;
@@ -96,6 +104,12 @@ static void NoteHello(const BYTE* p, UINT32 len) {
     if (!g_ctrl || len < 9) return;
     g_ctrl->tabletOnDemand = (p[8] & 1) ? 1 : 0;
     g_ctrl->tabletState = (p[8] & 2) ? 2 : 1;
+    if (len >= 14) { // tuning tail: [zoom*100:2][ev:1][tone:1][flags2:1]
+        g_ctrl->zoomX100 = (INT16)((p[9] << 8) | p[10]);
+        g_ctrl->ev = (INT8)p[11];
+        g_ctrl->tone = (INT8)p[12];
+        g_ctrl->tuneFlags = p[13];
+    }
 }
 
 static void logts();   // defined below, used by the demand thread
@@ -129,10 +143,20 @@ static bool SendCommand(const char* cmd) {
 static DWORD WINAPI DemandThread(LPVOID) {
     ULONGLONG lastDemand = 0, lastStart = 0, lastStop = 0;
     bool wasDemand = false;
-    for (;; Sleep(500)) {
+    UINT32 lastCmdSeq = g_ctrl ? g_ctrl->cmdSeq : 0;
+    for (;; Sleep(200)) {
         if (!g_ctrl) continue;
         ULONGLONG now = GetTickCount64();
         g_ctrl->hostBeat = now;
+        // Tray command mailbox -> wire (zoom/ev/tone/day/night/focus/flip/
+        // start/stop). Forwarded verbatim; the tablet validates.
+        if (g_ctrl->cmdSeq != lastCmdSeq) {
+            lastCmdSeq = g_ctrl->cmdSeq;
+            char c[16]; memcpy(c, (const void*)g_ctrl->cmd, 15); c[15] = 0;
+            logts(); printf("[CMD] tray -> tablet: %s (%s)\n", c,
+                g_cmdSock != INVALID_SOCKET ? "sent" : "no tablet");
+            if (g_cmdSock != INVALID_SOCKET) SendCommand(c);
+        }
         const bool demand = (now - g_ctrl->consumerBeat < 3000) || (now - g_ctrl->previewBeat < 3000);
         if (demand) lastDemand = now;
         if (demand != wasDemand) {

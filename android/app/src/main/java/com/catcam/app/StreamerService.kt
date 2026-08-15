@@ -61,8 +61,15 @@ import kotlin.concurrent.thread
  *               bit1 = camera live. Sent on connect and every 5s, so the PC
  *               can register the virtual camera before any frame exists and
  *               knows whether it is allowed to drive the camera.
+ *   The hello may carry the live tuning after the flags (older PCs ignore
+ *   the extra bytes): [zoom*100:2][ev:1][tone:1][flags2:1] with flags2
+ *   bit0 day mode, bit1 focus locked, bit2 focus lock supported (AF camera),
+ *   bit3 exposure compensation supported.
  *   PC -> tablet (same framing, the only packets that flow this way):
- *   type 0x10 = command, ASCII payload: "start" | "stop" | "flip"
+ *   type 0x10 = command, ASCII payload: "start" | "stop" | "flip" |
+ *   "zoom+" | "zoom-" | "ev+" | "ev-" | "tone+" | "tone-" | "day" | "night" |
+ *   "focus lock" | "focus auto". Each is exactly what the matching on-screen
+ *   control does, through the same setter, so the app UI never disagrees.
  *
  * READY is the base state: service up (from boot, from the app opening, or
  * re-armed by START_STICKY after a kill), connected to the PC, camera and mic
@@ -173,6 +180,31 @@ class StreamerService : Service() {
         @Volatile var dayMode = false
             private set
 
+        // Exposure compensation in HAL steps (CONTROL_AE_EXPOSURE_COMPENSATION),
+        // per camera, clamped to the camera's range at apply time. 0 = auto.
+        private const val KEY_EV_FRONT = "ev_front"
+        private const val KEY_EV_BACK = "ev_back"
+        @Volatile var evSteps = 0
+            private set
+        @Volatile var evRange: Range<Int> = Range(0, 0)   // from the open camera
+        // Focus lock: AF_MODE_AUTO + one trigger, held until unlocked (back
+        // camera; the front is fixed focus on most tablets, then unsupported).
+        @Volatile var focusLocked = false
+            private set
+        @Volatile var focusSupported = false
+
+        fun setEv(ctx: Context, steps: Int) {
+            evSteps = steps.coerceIn(-12, 12)
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt(if (preferFrontCamera) KEY_EV_FRONT else KEY_EV_BACK, evSteps).apply()
+            instance?.pushCaptureTuning()
+        }
+
+        fun setFocusLock(on: Boolean) {
+            focusLocked = on && focusSupported
+            instance?.pushCaptureTuning(afTrigger = focusLocked)
+        }
+
         // Mic level 0..1 (RMS with a sqrt curve so speech sits mid-bar),
         // published ~10/s while streaming; the UI draws it as a small bar.
         @Volatile var audioLevel = 0f
@@ -210,6 +242,7 @@ class StreamerService : Service() {
             zoomRatio = sp.getFloat(if (preferFrontCamera) KEY_ZOOM_FRONT else KEY_ZOOM_BACK, 1f)
                 .coerceIn(1f, zoomMax)
             toneStep = sp.getInt(if (preferFrontCamera) KEY_TONE_FRONT else KEY_TONE_BACK, 0)
+            evSteps = sp.getInt(if (preferFrontCamera) KEY_EV_FRONT else KEY_EV_BACK, 0)
             dayMode = sp.getBoolean(KEY_DAY_MODE, false)
             transportWifi = sp.getBoolean(KEY_TRANSPORT_WIFI, false)
             transportGen = sp.getInt(KEY_TRANSPORT_GEN, 0)
@@ -486,7 +519,19 @@ class StreamerService : Service() {
             "start" -> main.post { requestCameraOn(auto = true) }
             "stop" -> if (!manualHold) cameraOff()
             "flip" -> flip()
+            // Tuning: the same setters the on-screen controls use.
+            "zoom+" -> setZoom(this, zoomRatio * ZOOM_STEP)
+            "zoom-" -> setZoom(this, zoomRatio / ZOOM_STEP)
+            "ev+" -> setEv(this, evSteps + 1)
+            "ev-" -> setEv(this, evSteps - 1)
+            "tone+" -> setTone(this, toneStep + 1)
+            "tone-" -> setTone(this, toneStep - 1)
+            "day" -> setDayMode(this, true)
+            "night" -> setDayMode(this, false)
+            "focus lock" -> setFocusLock(true)
+            "focus auto" -> setFocusLock(false)
         }
+        sendHello()   // the PC menu shows the live values
     }
 
     // Reads the PC's commands. EOF here is the fastest disconnect signal we
@@ -526,7 +571,11 @@ class StreamerService : Service() {
         // bit0: the PC may drive the camera (not while the user holds it on)
         // bit1: camera live
         val flags = (if (manualHold) 0 else 1) or (if (camOn.get()) 2 else 0)
-        return java.nio.ByteBuffer.allocate(9).putInt(w).putInt(h).put(flags.toByte()).array()
+        val flags2 = (if (dayMode) 1 else 0) or (if (focusLocked) 2 else 0) or
+            (if (focusSupported) 4 else 0) or (if (evRange.upper > evRange.lower) 8 else 0)
+        return java.nio.ByteBuffer.allocate(14).putInt(w).putInt(h).put(flags.toByte())
+            .putShort((zoomRatio * 100f).toInt().coerceIn(0, 32767).toShort())
+            .put(evSteps.coerceIn(-127, 127).toByte()).put(toneStep.toByte()).put(flags2.toByte()).array()
     }
 
     // State changed: tell the PC now rather than at the next 5s heartbeat.
@@ -575,15 +624,31 @@ class StreamerService : Service() {
                    else CaptureRequest.EDGE_MODE_OFF
         if (availEdgeModes?.contains(edge) == true)
             req.set(CaptureRequest.EDGE_MODE, edge)
-        Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep")
+        // Exposure compensation, clamped to what this camera lists.
+        val ev = evSteps.coerceIn(evRange.lower, evRange.upper)
+        if (evRange.upper > evRange.lower) req.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
+        // Focus: continuous video by default; AUTO while locked (the trigger
+        // that actually locks is one-shot, see pushCaptureTuning).
+        if (focusSupported) {
+            req.set(CaptureRequest.CONTROL_AF_MODE, if (focusLocked)
+                CaptureRequest.CONTROL_AF_MODE_AUTO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        }
+        Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep ev=$ev focusLock=$focusLocked")
     }
 
-    private fun pushCaptureTuning() {
+    private fun pushCaptureTuning(afTrigger: Boolean = false) {
         val session = captureSession ?: return
         val req = reqBuilder ?: return
         cameraHandler?.post {
             try {
                 applyTuningToRequest(req)
+                if (afTrigger) {
+                    // One capture with the trigger fires the AF scan; the
+                    // repeating request (IDLE) then holds whatever it found.
+                    req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                    session.capture(req.build(), null, cameraHandler)
+                    req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                }
                 session.setRepeatingRequest(req.build(), null, cameraHandler)
             } catch (e: Exception) {
                 // Session mid-teardown (stop/flip race): harmless, the next
@@ -832,6 +897,11 @@ class StreamerService : Service() {
         availNrModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
         availEdgeModes = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)
         availAeRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
+        val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: IntArray(0)
+        val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        focusSupported = minFocus > 0f && afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO)
+        if (!focusSupported) focusLocked = false
         chosenChars = chars
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
