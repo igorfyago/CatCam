@@ -91,8 +91,8 @@ struct __declspec(uuid("f8679f50-850a-41cf-9c72-430f290290c8")) IPolicyConfig : 
 
 struct Endpoint {
     std::wstring id, desc, friendly, adapter;
-    EDataFlow flow;
-    DWORD state;
+    EDataFlow flow = eRender;
+    DWORD state = 0;   // 0 = unknown: never mistaken for ACTIVE
 };
 
 static std::wstring PropStr(IPropertyStore* ps, const PROPERTYKEY& key) {
@@ -362,7 +362,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (restore) PinRenderId(nullptr);   // even if the cable is already gone
     if (!cables) { Say(L"no active VB-Audio Virtual Cable endpoints (VB-Cable not installed, or not until the next reboot)\n"); return 3; }
-    if (setup) PinRenderId(renderId.empty() ? nullptr : renderId.c_str());
+    // No active 2ch render endpoint seen this run: keep whatever pin exists
+    // (a transient state must not erase a good pin; the host checks ACTIVE
+    // itself and falls back by name).
+    if (setup && !renderId.empty()) PinRenderId(renderId.c_str());
     Say(L"%s: %d cable endpoints, %d changed, %d failures%s\n", verb, cables, changed, failures,
         setup && !renderId.empty() ? L", render endpoint pinned for the host" : L"");
     return failures ? 4 : 0;
