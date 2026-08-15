@@ -67,8 +67,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var segNight: TextView
     private lateinit var segUsb: TextView
     private lateinit var segWifi: TextView
-    private lateinit var segAlways: TextView
-    private lateinit var segDemand: TextView
     private lateinit var audioBar: android.widget.ProgressBar
     private lateinit var preview: TextureView
 
@@ -150,15 +148,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         segNight = findViewById(R.id.seg_night)
         segUsb = findViewById(R.id.seg_usb)
         segWifi = findViewById(R.id.seg_wifi)
-        segAlways = findViewById(R.id.seg_always)
-        segDemand = findViewById(R.id.seg_demand)
         audioBar = findViewById(R.id.audio_level)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
         StreamerService.loadCameraPref(this)
 
         shutter.setOnClickListener {
-            if (StreamerService.statusText != "Idle") stopStreaming() else startOrAskPerms()
+            if (StreamerService.cameraLive) stopCamera() else startOrAskPerms(auto = false)
         }
         flipBtn.setOnClickListener { flipCamera() }
         zoomOutBtn.setOnClickListener { stepZoom(1f / StreamerService.ZOOM_STEP) }
@@ -169,24 +165,28 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         segNight.setOnClickListener { setDay(false) }
         segUsb.setOnClickListener { setTransport(false) }
         segWifi.setOnClickListener { setTransport(true) }
-        segAlways.setOnClickListener { setOnDemand(false) }
-        segDemand.setOnClickListener { setOnDemand(true) }
 
         updateZoomLabel()
         updateTuningLabels()
         updateStatusPill()
         updateShutter()
 
+        // A PC-driven start may bring this activity up over a dark, locked
+        // tablet: show it there and light the screen (API 27+).
+        if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
+
         requestBatteryExemption()
+        requestOverlayPermission()
         handler.post(ticker)
         handler.post(levelTicker)
+        // READY is the base state: opening the app arms the service (boot
+        // does the same via BootReceiver). Nothing to tap.
+        if (hasPerms()) arm() else ActivityCompat.requestPermissions(this, perms, 1)
         handleUiAction(intent)
-        // On demand: opening the app is enough. It goes READY by itself so
-        // the PC can turn the camera on later with nobody at the tablet
-        // (the whole point on Wi-Fi, where the PC cannot launch the app).
-        if (StreamerService.onDemand && StreamerService.statusText == "Idle" && hasPerms())
-            startStreaming()
     }
+
+    override fun onResume() { super.onResume(); StreamerService.activityInFront = true }
+    override fun onPause() { StreamerService.activityInFront = false; super.onPause() }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
@@ -198,44 +198,49 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     // while streaming and STOP while idle are no-ops.
     private fun handleUiAction(intent: Intent?) {
         when (intent?.action) {
-            ACTION_UI_START -> if (StreamerService.statusText == "Idle") startOrAskPerms()
-            ACTION_UI_STOP -> if (StreamerService.statusText != "Idle") stopStreaming()
+            // The service bounces PC-driven starts through here (extra auto)
+            // so the camera is started by a foreground activity.
+            ACTION_UI_START -> startOrAskPerms(
+                auto = intent.getBooleanExtra(StreamerService.EXTRA_AUTO, false))
+            ACTION_UI_STOP -> stopCamera()
             ACTION_UI_FLIP -> flipCamera()
         }
     }
 
     // ------------------------------------------------------------- actions
 
-    private fun startOrAskPerms() {
-        if (hasPerms()) startStreaming() else
+    private fun startOrAskPerms(auto: Boolean) {
+        if (hasPerms()) startCamera(auto) else
             ActivityCompat.requestPermissions(this, perms, 1)
     }
 
-    private fun startStreaming() {
-        val i = Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_START)
-        ContextCompat.startForegroundService(this, i)
+    private fun arm() {
+        ContextCompat.startForegroundService(this,
+            Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_ARM))
     }
 
-    private fun stopStreaming() {
+    // Sent from an activity in front: the service re-declares its camera
+    // types on this call, which is what Android 11+ needs for camera access.
+    private fun startCamera(auto: Boolean) {
+        ContextCompat.startForegroundService(this,
+            Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_START)
+                .putExtra(StreamerService.EXTRA_AUTO, auto))
+    }
+
+    private fun stopCamera() {
         startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_STOP))
     }
 
     private fun flipCamera() {
-        StreamerService.preferFrontCamera = !StreamerService.preferFrontCamera
-        StreamerService.saveCameraPref(this)
-        // Each camera keeps its own zoom and tone (calls vs cat duty want
-        // different framing): pull the new camera's saved values.
-        StreamerService.loadCameraPref(this)
-        updateZoomLabel()
-        updateTuningLabels()
-        if (StreamerService.statusText != "Idle") {
-            // Dim the last frame of the OLD camera while the switch runs, so
-            // the preview never quietly claims to be the new camera. The
-            // ticker restores alpha once the new camera is streaming.
-            preview.animate().alpha(0.3f).setDuration(150).start()
-            stopStreaming()
-            handler.postDelayed({ startStreaming() }, 800)
-        }
+        // Dim the last frame of the OLD camera while the switch runs, so the
+        // preview never quietly claims to be the new camera. The ticker
+        // restores alpha once the new camera is streaming. The service owns
+        // the pref flip + restart (same path as the PC's "flip" command).
+        if (StreamerService.cameraLive) preview.animate().alpha(0.3f).setDuration(150).start()
+        startService(Intent(this, StreamerService::class.java).setAction(StreamerService.ACTION_FLIP))
+        // Each camera keeps its own zoom and tone: labels catch up on the
+        // next tick after the service has re-read the prefs.
+        handler.postDelayed({ updateZoomLabel(); updateTuningLabels() }, 200)
     }
 
     // Zoom is applied at the camera HAL, so the stream to the PC and the
@@ -263,12 +268,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         updateTuningLabels()
     }
 
-    // Always on = Start means camera on (cat cam). On demand = Start means
-    // READY, the PC turns the camera on when an app pulls frames.
-    private fun setOnDemand(on: Boolean) {
-        StreamerService.setOnDemand(this, on)
-        updateTuningLabels()
-    }
 
     // ------------------------------------------------------------- state UI
 
@@ -318,7 +317,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private fun updateShutter() {
-        val live = StreamerService.statusText != "Idle"
+        val live = StreamerService.cameraLive
         if (live == shutterLive) return
         shutterLive = live
         shutterInner.setBackgroundResource(if (live) R.drawable.shutter_live else R.drawable.shutter_idle)
@@ -344,8 +343,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         styleSeg(segNight, !StreamerService.dayMode)
         styleSeg(segUsb, !StreamerService.transportWifi)
         styleSeg(segWifi, StreamerService.transportWifi)
-        styleSeg(segAlways, !StreamerService.onDemand)
-        styleSeg(segDemand, StreamerService.onDemand)
     }
 
     // ------------------------------------------------------------- plumbing
@@ -358,7 +355,22 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         requestCode: Int, permissions: Array<out String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (hasPerms()) startStreaming()
+        if (hasPerms()) arm()
+    }
+
+    // "Appear on top": lets the service bring this screen up when the PC
+    // asks for the camera while the app is in the background (Android's
+    // background-activity-start rule). Asked once, after the battery
+    // exemption is settled, so first run is not two settings screens at once.
+    private fun requestOverlayPermission() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) return
+        if (Settings.canDrawOverlays(this)) return
+        val sp = getSharedPreferences("catcam", MODE_PRIVATE)
+        if (sp.getBoolean("asked_overlay", false)) return
+        sp.edit().putBoolean("asked_overlay", true).apply()
+        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")))
     }
 
     private fun requestBatteryExemption() {
@@ -374,13 +386,23 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
         // A live GL pipeline adopts the surface on the spot (no restart, no
         // stream blip) and mirrors the encoder output into it.
-        if (StreamerService.attachPreview(Surface(st))) return
-        // Direct/landscape path: the preview is a HAL target, which can only
-        // join by rebuilding the capture session.
-        if (StreamerService.statusText != "Idle") {
-            stopStreaming()
-            handler.postDelayed({ startStreaming() }, 800)
-        }
+        val surf = Surface(st)
+        if (StreamerService.attachPreview(surf)) return
+        if (!StreamerService.cameraLive) return   // parked; the next build adopts it
+        // Not attachable right now: either the pipeline is still building
+        // (a PC-driven start brought this screen up a moment ago; the build
+        // adopts the parked surface itself) or this is the direct/landscape
+        // path, where the preview is a HAL target that can only join by
+        // rebuilding the session. Give the build a moment before deciding,
+        // otherwise the restart races the build (eglCreateWindowSurface
+        // failed, camera off/on flicker, measured 2026-08-15).
+        handler.postDelayed({
+            if (StreamerService.cameraLive && !StreamerService.attachPreview(surf)) {
+                val auto = !StreamerService.manualHold
+                stopCamera()
+                handler.postDelayed({ startCamera(auto) }, 800)
+            }
+        }, 1500)
     }
 
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {

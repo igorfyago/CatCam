@@ -77,43 +77,6 @@
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
-        <!-- Camera policy: always on (cat cam) or on demand (PC turns the
-             camera on when an app pulls frames, off when nothing does). -->
-        <LinearLayout
-            android:orientation="horizontal"
-            android:background="@drawable/pill_scrim"
-            android:padding="4dp"
-            android:layout_marginTop="8dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content">
-
-            <TextView
-                android:id="@+id/seg_always"
-                android:text="Always on"
-                android:textColor="#B3FFFFFF"
-                android:textSize="13sp"
-                android:fontFamily="sans-serif-medium"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-
-            <TextView
-                android:id="@+id/seg_demand"
-                android:text="On demand"
-                android:textColor="#B3FFFFFF"
-                android:textSize="13sp"
-                android:fontFamily="sans-serif-medium"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-        </LinearLayout>
-
         <!-- Onboarding: only while waiting and a PC has never connected. -->
         <TextView
             android:id="@+id/get_pc_hint"

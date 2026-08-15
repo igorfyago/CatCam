@@ -31,6 +31,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import android.util.Range
@@ -63,10 +64,17 @@ import kotlin.concurrent.thread
  *   PC -> tablet (same framing, the only packets that flow this way):
  *   type 0x10 = command, ASCII payload: "start" | "stop" | "flip"
  *
- * On-demand mode: the service sits in READY (connected, camera and mic OFF,
- * heartbeat only) and the PC turns the camera on when an app actually pulls
- * frames from the virtual camera and off again when nothing does. Always-on
- * mode (default, the cat cam) behaves as before: Start = camera on.
+ * READY is the base state: service up (from boot, from the app opening, or
+ * re-armed by START_STICKY after a kill), connected to the PC, camera and mic
+ * OFF, heartbeat only. Two things turn the camera on:
+ *   - the PC, when an app actually pulls frames from the virtual camera
+ *     (auto: it goes off again 5s after the last consumer leaves)
+ *   - the user, with the big button (manual: stays on until tapped off; the
+ *     PC never switches a manually held camera off)
+ * Android 11+ denies the camera to a service that was started while the app
+ * was in the background (boot counts), so an auto start from the background
+ * bounces through MainActivity (needs "Appear on top" once): the activity
+ * re-starts us as a foreground-started service, which unlocks the camera.
  *
  * The PC connects to us. USB mode: `adb forward tcp:9000 tcp:9000`, PC connects to localhost:9000.
  * WiFi mode: PC connects to <tablet-ip>:9000.
@@ -76,8 +84,12 @@ class StreamerService : Service() {
     companion object {
         private const val TAG = "CatCam"
         const val PORT = 9000
-        const val ACTION_START = "com.catcam.app.START"
-        const val ACTION_STOP = "com.catcam.app.STOP"
+        const val ACTION_ARM = "com.catcam.app.ARM"       // READY: service up, camera off
+        const val ACTION_START = "com.catcam.app.START"   // camera on (extra "auto": PC-driven)
+        const val ACTION_STOP = "com.catcam.app.STOP"     // camera off, stay READY
+        const val ACTION_QUIT = "com.catcam.app.QUIT"     // service down entirely
+        const val ACTION_FLIP = "com.catcam.app.FLIP"
+        const val EXTRA_AUTO = "auto"
         private const val CHANNEL_ID = "catcam_stream"
 
         // Tunables
@@ -121,23 +133,16 @@ class StreamerService : Service() {
         private const val KEY_DAY_MODE = "day_mode"
         private const val KEY_TRANSPORT_WIFI = "transport_wifi"
         private const val KEY_TRANSPORT_GEN = "transport_gen"
-        private const val KEY_ON_DEMAND = "on_demand"
-
-        // On-demand: the PC drives the camera (READY state, camera off until
-        // an app on the PC pulls frames). Off = always-on, the cat cam.
-        @Volatile var onDemand = false
-            private set
         // Camera + mic actually running right now (READY = running && !live).
         @Volatile var cameraLive = false
             private set
-
-        fun setOnDemand(ctx: Context, on: Boolean) {
-            if (on == onDemand) return
-            onDemand = on
-            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putBoolean(KEY_ON_DEMAND, on).apply()
-            instance?.applyOnDemand()
-        }
+        // The user turned the camera on with the button: the PC may not turn
+        // it off. Cleared by the user's Stop.
+        @Volatile var manualHold = false
+            private set
+        // MainActivity resumed. A camera start from the background must go
+        // through the activity (see the class doc); in front, it is direct.
+        @Volatile var activityInFront = false
 
         // Multiplicative per tap: even perceived steps across the whole range
         // (1x to this HAL's 10x in ~10 taps). Additive steps feel huge near 1x
@@ -208,7 +213,6 @@ class StreamerService : Service() {
             dayMode = sp.getBoolean(KEY_DAY_MODE, false)
             transportWifi = sp.getBoolean(KEY_TRANSPORT_WIFI, false)
             transportGen = sp.getInt(KEY_TRANSPORT_GEN, 0)
-            onDemand = sp.getBoolean(KEY_ON_DEMAND, false)
         }
 
         // UI entry: clamp, persist for this camera, and push into the live
@@ -345,23 +349,32 @@ class StreamerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> { stopStreaming(); stopSelf(); return START_NOT_STICKY }
-            else -> startStreaming()
+            ACTION_QUIT -> { stopStreaming(); stopSelf(); return START_NOT_STICKY }
+            ACTION_STOP -> { arm(); cameraOff() }
+            ACTION_START -> {
+                arm()
+                // Re-declare with the camera types NOW: this call is what
+                // makes Android treat us as foreground-started for camera
+                // access (the activity sends START while it is in front).
+                startForegroundWithNotification(withCamera = true)
+                cameraOn(auto = intent.getBooleanExtra(EXTRA_AUTO, false))
+            }
+            ACTION_FLIP -> { arm(); flip() }
+            else -> arm()   // ACTION_ARM, or null = STICKY restart after a kill
         }
         return START_STICKY
     }
 
-    private fun startStreaming() {
+    // READY: everything but the camera. Idempotent.
+    private fun arm() {
         if (!running.compareAndSet(false, true)) return
         loadCameraPref(this)
-        Log.i(TAG, "Starting streamer (onDemand=$onDemand)")
-        startForegroundWithNotification()
+        Log.i(TAG, "armed (READY)")
+        startForegroundWithNotification(withCamera = false)
         acquireWakeLock()
-
         thread(name = "CatCamServer") { serverLoop() }
         thread(name = "CatCamBeacon") { beaconLoop() }
-        // On demand: sit in READY, the PC says when. Otherwise camera on now.
-        if (onDemand) updateStatus() else cameraOn()
+        updateStatus()
     }
 
     private fun stopStreaming() {
@@ -381,11 +394,14 @@ class StreamerService : Service() {
     // camera (Camera2 + encoder + mic + bright screen) have separate
     // lifetimes now: READY is the service up with the camera off.
 
-    private fun cameraOn() {
+    private val main = Handler(Looper.getMainLooper())
+
+    private fun cameraOn(auto: Boolean) {
         if (!running.get()) return
-        if (!camOn.compareAndSet(false, true)) return
+        if (!auto) manualHold = true       // user hold sticks even if already live
+        if (!camOn.compareAndSet(false, true)) { sendHello(); return }
         cameraLive = true
-        Log.i(TAG, "camera ON")
+        Log.i(TAG, "camera ON (" + (if (auto) "PC" else "user") + ")")
         acquireScreenLock()
         thread(name = "CatCamAudio") { audioLoop() }
         openCameraAndEncoder()
@@ -393,7 +409,8 @@ class StreamerService : Service() {
     }
 
     private fun cameraOff() {
-        if (!camOn.compareAndSet(true, false)) return
+        manualHold = false
+        if (!camOn.compareAndSet(true, false)) { sendHello(); return }
         cameraLive = false
         Log.i(TAG, "camera OFF")
         glPreviewActive = false
@@ -415,13 +432,40 @@ class StreamerService : Service() {
         updateStatus(); updateNotification(); sendHello()
     }
 
-    // The on-demand switch flipped while the service runs. Always-on wants
-    // the camera up now; on-demand tells the PC (via the hello flag) and
-    // lets it decide, so a call in progress is not cut.
-    fun applyOnDemand() {
-        if (!running.get()) return
-        if (!onDemand) cameraOn()
-        updateStatus(); sendHello()
+    // A PC-driven start. In front: direct. In the background: bounce
+    // through MainActivity (Appear-on-top permission), which sends START
+    // back to us as a foreground-started service; that is what unlocks the
+    // camera on Android 11+. If the bounce is blocked (permission not
+    // granted, or the OS drops the launch), try directly anyway 2s later:
+    // it works whenever the service was last started from the foreground.
+    private fun requestCameraOn(auto: Boolean) {
+        if (camOn.get()) { cameraOn(auto); return }
+        if (activityInFront) { cameraOn(auto); return }
+        try {
+            startActivity(Intent(this, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_UI_START)
+                .putExtra(EXTRA_AUTO, auto)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            Log.i(TAG, "camera requested from background: bringing the app to front")
+        } catch (e: Exception) {
+            Log.w(TAG, "activity bounce failed: ${e.message}")
+        }
+        main.postDelayed({ if (running.get() && !camOn.get()) cameraOn(auto) }, 2000)
+    }
+
+    // Camera switch keeps its owner: a PC-driven camera stays PC-driven.
+    private fun flip() {
+        thread(name = "CatCamFlip") {
+            preferFrontCamera = !preferFrontCamera
+            saveCameraPref(this)
+            loadCameraPref(this)
+            if (camOn.get()) {
+                val wasManual = manualHold
+                cameraOff()
+                Thread.sleep(800) // camera close settles (lesson 37 race)
+                cameraOn(auto = !wasManual)
+            }
+        }
     }
 
     private fun updateStatus() {
@@ -434,23 +478,14 @@ class StreamerService : Service() {
     }
 
     // What the PC may tell us. Idempotent: start while live and stop while
-    // READY are no-ops. Only an on-demand tablet lets the PC switch the
-    // camera off; in always-on mode "stop" is ignored by design.
+    // READY are no-ops. A camera the user turned on is the user's: the PC's
+    // stop is ignored while manualHold is set.
     private fun handleCommand(cmd: String) {
         Log.i(TAG, "PC command: $cmd")
         when (cmd) {
-            "start" -> cameraOn()
-            "stop" -> if (onDemand) cameraOff()
-            "flip" -> thread(name = "CatCamFlip") {
-                preferFrontCamera = !preferFrontCamera
-                saveCameraPref(this)
-                loadCameraPref(this)
-                if (camOn.get()) {
-                    cameraOff()
-                    Thread.sleep(800) // camera close settles (lesson 37 race)
-                    cameraOn()
-                }
-            }
+            "start" -> main.post { requestCameraOn(auto = true) }
+            "stop" -> if (!manualHold) cameraOff()
+            "flip" -> flip()
         }
     }
 
@@ -488,7 +523,9 @@ class StreamerService : Service() {
 
     private fun helloPayload(): ByteArray {
         val (w, h) = encodeDims()
-        val flags = (if (onDemand) 1 else 0) or (if (camOn.get()) 2 else 0)
+        // bit0: the PC may drive the camera (not while the user holds it on)
+        // bit1: camera live
+        val flags = (if (manualHold) 0 else 1) or (if (camOn.get()) 2 else 0)
         return java.nio.ByteBuffer.allocate(9).putInt(w).putInt(h).put(flags.toByte()).array()
     }
 
@@ -1261,16 +1298,17 @@ class StreamerService : Service() {
     // ------------------------------------------------------------- plumbing
 
     private fun buildNotification(): Notification {
-        val stopIntent = PendingIntent.getService(
-            this, 0,
-            Intent(this, StreamerService::class.java).setAction(ACTION_STOP),
+        val live = camOn.get()
+        val action = PendingIntent.getService(
+            this, if (live) 1 else 2,
+            Intent(this, StreamerService::class.java).setAction(if (live) ACTION_STOP else ACTION_QUIT),
             PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("CatCam")
-            .setContentText(if (camOn.get()) "Streaming camera + mic to PC"
-                            else "Ready · PC turns the camera on")
+            .setContentText(if (live) "Streaming camera + mic to PC"
+                            else "Ready · the PC turns the camera on when an app uses it")
             .setSmallIcon(android.R.drawable.presence_video_online)
-            .addAction(Notification.Action.Builder(null, "Stop", stopIntent).build())
+            .addAction(Notification.Action.Builder(null, if (live) "Stop camera" else "Quit", action).build())
             .setOngoing(true)
             .build()
     }
@@ -1281,15 +1319,28 @@ class StreamerService : Service() {
             .notify(1, buildNotification())
     }
 
-    private fun startForegroundWithNotification() {
+    // READY declares connectedDevice only: that type may be started from the
+    // background (boot, sticky restart). The camera and mic types are added
+    // when the camera is started from the foreground (ACTION_START sent by
+    // the activity); on Android 14+ declaring them from the background throws,
+    // in which case fall back to READY types and let the camera open report
+    // whatever it reports.
+    private fun startForegroundWithNotification(withCamera: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "CatCam streaming", NotificationManager.IMPORTANCE_LOW))
         val notif = buildNotification()
-
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(1, notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        val ready = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val types = if (withCamera)
+            ready or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        else ready
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                startForeground(1, notif, types)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "FGS camera types refused (background start?): ${e.message}")
+                startForeground(1, notif, ready)
+            }
         } else {
             startForeground(1, notif)
         }

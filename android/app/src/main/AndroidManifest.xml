@@ -9,6 +9,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- READY at boot and after a kill; connectedDevice is the FGS type that
+         may be started from the background (camera/mic types are added when
+         the camera is started from the foreground). CHANGE_WIFI_STATE is the
+         API 34 prerequisite for connectedDevice; SYSTEM_ALERT_WINDOW lets the
+         service bring MainActivity up for a PC-driven start (Android 11+
+         camera-in-background rule). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
@@ -35,6 +45,15 @@
         <service
             android:name=".StreamerService"
             android:exported="false"
-            android:foregroundServiceType="camera|microphone" />
+            android:foregroundServiceType="camera|microphone|connectedDevice" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
