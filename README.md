@@ -175,7 +175,11 @@ real tablet app over adb when a cable is present (start, stop, flip
 camera), opens a live preview that works even when consumer apps cannot,
 and toggles the speaker monitor: hear the tablet's room on the PC
 speakers, default muted, because hearing your own room narrated back to
-you at full volume is a jump scare, not a feature.
+you at full volume is a jump scare, not a feature. Its **Camera** submenu
+drives the tablet from the PC over the same connection the video uses,
+Wi-Fi or USB alike: zoom, exposure (brighter/darker), warm/cool tone,
+Day/Night, focus lock (cameras with autofocus), flip. The menu shows the
+live values the device reports.
 
 ## For developers (and their AIs) fighting MFCreateVirtualCamera
 
