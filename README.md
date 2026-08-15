@@ -39,6 +39,7 @@ Android device (Kotlin app)
         (foreground service, wake lock)            + a UDP discovery beacon
 Wire protocol per packet: [1B type][4B big-endian len][payload]
   0x01 config (SPS+PPS)   0x02 H.264 access unit   0x03 PCM chunk
+  0x04 hello/heartbeat (dims + state)   0x10 PC -> device command
 
 Windows
   CatCamHost.exe   TCP client -> MF H.264 decoder -> NV12 frames
@@ -53,6 +54,26 @@ Windows
 
 Three processes, one shared-memory hop, zero third-party virtual-device
 software. The cat is not aware it is load-bearing.
+
+## The camera turns itself on
+
+You do not start CatCam. Once installed, the device sits **ready**: a
+quiet service, connected to the PC over USB or Wi-Fi, camera and mic
+off. It comes up by itself at boot, after an app update, and after
+Android kills it. When an app on the PC actually pulls frames from the
+CatCam camera (you pick CatCam in Teams, Zoom opens its preview, the
+Windows Camera app starts), the device's camera turns on within about a
+second; five seconds after the last app lets go, it turns off again.
+Nobody walks to the tablet, and the camera is not filming your room for
+the twenty-three hours a day nobody is looking. Screen off, tablet locked,
+app in the background: it still works, the device wakes its own screen
+for the duration.
+
+The big button in the app is the manual camera, for cat duty: tap it on
+and it stays on until you tap it off; the PC never switches off a camera
+you turned on by hand. First run asks for "Appear on top" once, which is
+what lets the service bring the app to the front for a PC-driven start
+(Android 11+ will not give a background service the camera otherwise).
 
 ## Transport: Wi-Fi or USB, your call
 
@@ -131,8 +152,9 @@ Prefer the manual path? The release zip still ships
 
 ## The app
 
-A camera app that happens to broadcast: full-bleed preview, a record
-shutter (white circle idle, red square live), one-tap camera flip, zoom
+A camera app that happens to broadcast: full-bleed preview, a manual
+camera shutter (white circle off, red square live; the PC drives the
+camera the rest of the time), one-tap camera flip, zoom
 buttons, a warm/cool tone nudge, a Day/Night tuning pair (Night is
 measured for dark rooms and grainy sensors), a mic level meter, and the
 USB | Wi-Fi transport switch. The preview shows exactly the frame your PC
@@ -143,10 +165,12 @@ is for humans, the back camera knows what it is really for.
 ## The tray
 
 The mascot lives in your system tray; its status dot is the system's
-truth: green = frames flowing (cat observable), yellow = host up but the
-device stalled (in USB mode the tray re-arms the adb forward
-automatically; in Wi-Fi mode it re-follows the beacon), red = host down
-(auto-restarts), gray = starting. The menu toggles Wi-Fi mode, drives the
+truth: green = frames flowing (cat observable), yellow = device ready
+with its camera off, or not reachable yet (the tooltip says which; in USB
+mode the tray re-arms the adb forward automatically, in Wi-Fi mode it
+re-follows the beacon), red = host down (auto-restarts, backing off),
+gray = starting. Opening the tray's live preview counts as an app pulling
+frames: the device camera turns on for it. The menu toggles Wi-Fi mode, drives the
 real tablet app over adb when a cable is present (start, stop, flip
 camera), opens a live preview that works even when consumer apps cannot,
 and toggles the speaker monitor: hear the tablet's room on the PC
