@@ -422,7 +422,13 @@ class StreamerService : Service() {
                 ServerSocket(PORT).use { server ->
                     serverSocket = server
                     Log.i(TAG, "Listening on :$PORT")
-                    val client: Socket = server.accept()
+                    // The accepted socket must be closed explicitly: closing
+                    // the ServerSocket does NOT close it, and a leaked client
+                    // kept the PC host blocked in recv() on a dead stream
+                    // until Android killed this process (host never
+                    // reconnected to the next session; when the process
+                    // finally died the tray respawned the host every 3s).
+                    server.accept().use { client ->
                     client.tcpNoDelay = true
                     Log.i(TAG, "PC connected: ${client.inetAddress}")
                     // Ground truth: loopback = adb-forwarded USB, LAN = Wi-Fi.
@@ -447,6 +453,7 @@ class StreamerService : Service() {
                     // dies. Blocking HERE is fine: only the network waits on
                     // the network; capture keeps producing into the queue.
                     senderLoop(o)
+                    } // client.use: closes the connection, host sees EOF
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "serverLoop: ${e.message}")

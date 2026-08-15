@@ -71,6 +71,9 @@ static bool iconHidden = false;
 static CamState shownState = CamState::Gray;
 static bool stateEverShown = false;
 static ULONGLONG nextStartAllowed = 0;   // host restart cooldown
+static ULONGLONG hostStartedAt = 0;      // for "did it run a real session?"
+static DWORD     restartDelayMs = 3000;  // escalates while the host keeps dying
+static int       hostExitStreak = 0;     // consecutive short-lived hosts
 
 static HANDLE hMap = nullptr;
 static volatile SharedMemHeader* shm = nullptr;
@@ -104,7 +107,16 @@ static void Log(const char* fmt, ...) {
     if (fopen_s(&f, logPath, "a") == 0 && f) {
         va_list ap; va_start(ap, fmt);
         vfprintf(f, fmt, ap); fprintf(f, "\n");
-        va_end(ap); fclose(f);
+        va_end(ap);
+        // Append mode: the post-write position is the size. Keep one
+        // generation so a runaway loop costs 8MB, not the disk.
+        const long size = ftell(f);
+        fclose(f);
+        if (size > 4 * 1024 * 1024) {
+            char old[MAX_PATH * 2];
+            snprintf(old, sizeof(old), "%s.1", logPath);
+            MoveFileExA(logPath, old, MOVEFILE_REPLACE_EXISTING);
+        }
     }
 }
 
@@ -247,7 +259,11 @@ static void StartHost() {
     DWORD existing = FindHostPid();
     if (existing) {
         HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, existing);
-        if (h) { pi = {}; pi.hProcess = h; Log("host adopted (pid %lu)", existing); return; }
+        if (h) {
+            pi = {}; pi.hProcess = h; hostStartedAt = GetTickCount64();
+            Log("host adopted (pid %lu)", existing);
+            return;
+        }
         Log("host pid %lu found but OpenProcess failed (%lu)", existing, GetLastError());
     }
 
@@ -274,6 +290,16 @@ static void StartHost() {
     // Append host stdout/stderr to host.log so diagnostics survive the
     // hidden window (a tray-started host used to log nowhere).
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    // Rotate first: no host is writing at this point (the adopt path above
+    // already returned), and this file had grown to 14MB unattended.
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(hostLogPath, GetFileExInfoStandard, &fad)
+            && (((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow) > 8ull * 1024 * 1024) {
+        wchar_t old[MAX_PATH * 2];
+        swprintf_s(old, L"%s.1", hostLogPath);
+        MoveFileExW(hostLogPath, old, MOVEFILE_REPLACE_EXISTING);
+        Log("host.log exceeded 8MB, rotated to host.log.1");
+    }
     HANDLE hLog = CreateFileW(hostLogPath, FILE_APPEND_DATA,
         FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -295,6 +321,7 @@ static void StartHost() {
     }
     if (CreateProcessW(exe, cmd, nullptr, nullptr, TRUE,
             CREATE_NO_WINDOW, nullptr, dir, &si, &pi)) {
+        hostStartedAt = GetTickCount64();
         Log("host started hidden (pid %lu, monitor %s, target %s)", pi.dwProcessId,
             monitor ? "ON" : "muted", wifiIp[0] ? "wifi" : "usb");
     } else {
@@ -686,13 +713,34 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == IDT_PREVIEW) { PreviewTick(); return 0; }
         if (wp == IDT_TICK) {
-            // Watchdog: restart the host if it died (3s cooldown).
+            // Watchdog: restart the host if it died, backing off while it
+            // keeps dying young. A flat 3s retry here is what turned a
+            // sleeping tablet into ~1200 host launches an hour and a tray
+            // icon flapping red (cooling down) / yellow (briefly alive).
+            // The host now waits for the tablet in-process, so a fast exit
+            // means a real failure, and hammering it will not fix that.
             if (pi.hProcess && WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+                DWORD code = 0;
+                GetExitCodeProcess(pi.hProcess, &code);
+                ULONGLONG lived = hostStartedAt ? GetTickCount64() - hostStartedAt : 0;
                 CloseHandle(pi.hProcess);
                 if (pi.hThread) CloseHandle(pi.hThread);
                 pi = {};
-                Log("host exited, restart in 3s");
-                nextStartAllowed = GetTickCount64() + 3000;
+                if (lived >= 30000) {          // ran a real session: one-off death
+                    restartDelayMs = 3000;
+                    hostExitStreak = 0;
+                } else if (restartDelayMs < 60000) {
+                    restartDelayMs *= 2;
+                    if (restartDelayMs > 60000) restartDelayMs = 60000;
+                }
+                hostExitStreak++;
+                // Log the first few and then rarely: this line was 20k of
+                // the 20,175 lines in tray.log.
+                if (hostExitStreak <= 3 || hostExitStreak % 20 == 0)
+                    Log("host exited (code %lu, ran %llus), restart in %lums%s",
+                        code, lived / 1000, restartDelayMs,
+                        hostExitStreak > 3 ? " [repeating]" : "");
+                nextStartAllowed = GetTickCount64() + restartDelayMs;
             }
             if (!pi.hProcess && GetTickCount64() >= nextStartAllowed) StartHost();
             CamState st = ReadState();

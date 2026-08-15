@@ -503,8 +503,20 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
     static BYTE payload[1 << 20];
     UINT64 audioBytes = 0;
     int pkts = 0;
+    // A live tablet sends audio every 100ms even with the camera dark, so
+    // 15s of silence is a dead peer. Without this the host blocked in recv()
+    // forever on a socket the tablet had leaked (stopped streaming without
+    // closing the accepted client), and never reconnected to the next session.
+    DWORD rcvMs = 15000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvMs, sizeof(rcvMs));
     for (;;) {
-        if (!RecvAll(sock, header, 5)) { logts(); printf("[NET] tablet disconnected\n"); break; }
+        if (!RecvAll(sock, header, 5)) {
+            logts();
+            printf(WSAGetLastError() == WSAETIMEDOUT
+                ? "[NET] tablet silent 15s, dropping connection\n"
+                : "[NET] tablet disconnected\n");
+            break;
+        }
         UINT32 len = (header[1] << 24) | (header[2] << 16) | (header[3] << 8) | header[4];
         if (len > sizeof(payload)) { printf("[NET] oversize packet %u\n", len); break; }
         if (!RecvAll(sock, payload, len)) break;
@@ -614,21 +626,38 @@ int wmain(int argc, wchar_t** argv) {
     // camera must keep one resolution for its lifetime.
     WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
     SOCKET s = INVALID_SOCKET;
-    for (int attempt = 0;; attempt++) {
+    // Wait for the tablet IN-PROCESS, indefinitely. Giving up here (old
+    // behaviour: exit 1 after one failed config wait) handed the waiting to
+    // the tray watchdog, which respawned the entire host every 3s for as
+    // long as the tablet was asleep - MF decoder init, virtual camera probe
+    // and a VB-Cable endpoint open on every attempt, ~1200 process launches
+    // an hour, a 14MB host.log of one repeated stanza, and a tray icon
+    // flapping red/yellow the whole time. Waiting is cheap, respawning is not.
+    // Note: adb's forward ACCEPTS the local connect even when nothing is
+    // listening on the device, so a successful connect() is NOT proof of a
+    // tablet. Only the config packet is - so retry the pair, not the connect.
+    for (long long attempt = 0;; attempt++) {
+        // Quiet after the first few tries: this loop can now run for days.
+        const bool loud = attempt < 3 || attempt % 60 == 0;
         s = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in addr{};
         addr.sin_family = AF_INET; addr.sin_port = htons(port);
         inet_pton(AF_INET, host, &addr.sin_addr);
-        logts(); printf("[NET] connecting to %s:%d ...\n", host, port);
+        if (loud) { logts(); printf("[NET] connecting to %s:%d ...\n", host, port); }
         if (connect(s, (sockaddr*)&addr, sizeof(addr)) == 0) {
-            logts(); printf("[NET] connected to tablet\n");
-            break;
+            // Bound the config wait: the stream socket has no timeout, so a
+            // peer that connects and then says nothing would hang us here.
+            DWORD rcvMs = 10000;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvMs, sizeof(rcvMs));
+            if (WaitForConfig(s, fw, dec)) { // StreamLoop sets its own timeout
+                logts(); printf("[NET] connected to tablet\n");
+                break;
+            }
+            if (loud) { logts(); printf("[WAIT] no config (tablet not streaming yet)\n"); }
         }
-        closesocket(s);
-        if (attempt > 30) { printf("[ERR] tablet never connected\n"); return 1; }
-        Sleep(2000);
+        closesocket(s); s = INVALID_SOCKET;
+        Sleep(attempt < 10 ? 2000 : 15000);
     }
-    if (!WaitForConfig(s, fw, dec)) { printf("[ERR] no config from tablet\n"); return 1; }
 
     ComPtr<IMFVirtualCamera> cam;
     HRESULT hr = MFCreateVirtualCamera(
@@ -642,18 +671,27 @@ int wmain(int argc, wchar_t** argv) {
     printf("[OK] 'CatCam' virtual camera is LIVE\n");
 
     StreamLoop(s, dec, fw); // runs until disconnect
-    for (;;) { // reconnect loop
+    // Reconnect loop. Same adb false-accept caveat as the initial wait, so
+    // throttle both the logging and the retry rate: a tablet that sleeps
+    // overnight must not fill host.log with a stanza every 2 seconds.
+    for (long long attempt = 0;; attempt++) {
+        const bool loud = attempt < 3 || attempt % 60 == 0;
         s = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in addr{};
         addr.sin_family = AF_INET; addr.sin_port = htons(port);
         inet_pton(AF_INET, host, &addr.sin_addr);
-        logts(); printf("[NET] connecting to %s:%d ...\n", host, port);
+        if (loud) { logts(); printf("[NET] connecting to %s:%d ...\n", host, port); }
         if (connect(s, (sockaddr*)&addr, sizeof(addr)) == 0) {
-            logts(); printf("[NET] connected to tablet\n");
+            if (loud) { logts(); printf("[NET] connected to tablet\n"); }
+            ULONGLONG began = GetTickCount64();
             StreamLoop(s, dec, fw);
+            // Only a session that actually ran resets the throttle. A
+            // false-accept returns from StreamLoop immediately, and must
+            // NOT look like a fresh start or the loop never backs off.
+            if (GetTickCount64() - began >= 10000) attempt = -1;
         }
         closesocket(s);
-        Sleep(2000);
+        Sleep(attempt < 10 ? 2000 : 15000);
     }
     return 0;
 }
