@@ -9,6 +9,32 @@
 // session boundaries (from Session 0 where Frame Server runs, to the user session).
 #define SHARED_MEM_NAME L"Global\\CatCam_SharedMem"
 #define MUTEX_NAME      L"Global\\CatCam_Mutex"
+#define CONTROL_MEM_NAME L"Global\\CatCam_Control"
+
+// Small side channel next to the frame buffer (its own mapping so the frame
+// layout and the stale-mapping rules around it are untouched). Everyone
+// writes only their own fields; ticks are GetTickCount64 (system-wide).
+//   consumerBeat  : this DLL, on every sample it serves = "an app is pulling
+//                   frames from the virtual camera right now"
+//   previewBeat   : the tray, while its preview window is open
+//   tabletState   : the host, 0 = no tablet, 1 = READY (camera off), 2 = live
+//   tabletOnDemand: the host, 1 = the tablet lets the PC drive its camera
+//   hostBeat      : the host, alive
+// The host turns demand (either beat fresh) into start/stop commands.
+#pragma pack(push, 1)
+struct ControlBlock
+{
+    UINT32  magic;          // 'CCTL'
+    UINT32  version;        // 1
+    UINT64  consumerBeat;
+    UINT64  previewBeat;
+    UINT32  tabletState;
+    UINT32  tabletOnDemand;
+    UINT64  hostBeat;
+    UINT8   reserved[64 - 40];
+};
+#pragma pack(pop)
+#define CONTROL_MAGIC 0x4C544343u   // "CCTL" little-endian
 
 // Data layout of the shared memory mapping
 #pragma pack(push, 1)
@@ -41,9 +67,18 @@ public:
     UINT32 GetWidth() const;
     UINT32 GetHeight() const;
 
+    // Called on every served sample while the stream is active: stamps
+    // consumerBeat so the host knows an app is actually watching. Cheap
+    // (one store); opens the control mapping lazily and retries quietly if
+    // the host has not created it yet.
+    void TouchConsumer();
+
 private:
     HANDLE _hMapFile;
     HANDLE _hMutex;
     SharedMemHeader* _header;
     UINT64 _lastIndex;
+    HANDLE _hCtrlMap = nullptr;
+    ControlBlock* _ctrl = nullptr;
+    UINT32 _ctrlRetry = 0;
 };

@@ -46,6 +46,7 @@ static const WCHAR* SOURCE_CLSID = L"{A164EB71-2905-4859-BC91-5C87C90F3DC7}";
 // Must match FrameServer.h
 #define SHARED_MEM_NAME L"Global\\CatCam_SharedMem"
 #define MUTEX_NAME      L"Global\\CatCam_Mutex"
+#define CONTROL_MEM_NAME L"Global\\CatCam_Control"
 
 #pragma pack(push, 1)
 struct SharedMemHeader {
@@ -57,6 +58,99 @@ struct SharedMemHeader {
 
 static const int WIDTH = 1280, HEIGHT = 720;
 static const UINT32 FRAME_SIZE = WIDTH * HEIGHT * 3 / 2; // NV12
+
+// Must match FrameServer.h. Demand side channel: the DLL stamps
+// consumerBeat while an app pulls frames, the tray stamps previewBeat while
+// its preview is open, this host publishes what the tablet reported and
+// turns fresh beats into start/stop commands for an on-demand tablet.
+#pragma pack(push, 1)
+struct ControlBlock {
+    UINT32 magic, version;
+    UINT64 consumerBeat, previewBeat;
+    UINT32 tabletState;      // 0 none, 1 READY (camera off), 2 live
+    UINT32 tabletOnDemand;   // 1 = PC may drive the camera
+    UINT64 hostBeat;
+    UINT8  reserved[64 - 40];
+};
+#pragma pack(pop)
+static const UINT32 CONTROL_MAGIC = 0x4C544343u;
+static ControlBlock* g_ctrl = nullptr;
+
+static void ControlInit() {
+    SECURITY_DESCRIPTOR sd;
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE);
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), &sd, FALSE };
+    HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+        0, sizeof(ControlBlock), CONTROL_MEM_NAME);
+    if (!h) { printf("[WARN] control mapping: %lu\n", GetLastError()); return; }
+    g_ctrl = (ControlBlock*)MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ControlBlock));
+    if (!g_ctrl) { printf("[WARN] control map view: %lu\n", GetLastError()); return; }
+    if (g_ctrl->magic == 0) { g_ctrl->version = 1; g_ctrl->magic = CONTROL_MAGIC; }
+    g_ctrl->tabletState = 0; g_ctrl->tabletOnDemand = 0;
+    g_ctrl->hostBeat = GetTickCount64();
+}
+
+// The tablet's hello (0x04): [w:4][h:4][flags:1], bit0 on-demand, bit1 live.
+static void NoteHello(const BYTE* p, UINT32 len) {
+    if (!g_ctrl || len < 9) return;
+    g_ctrl->tabletOnDemand = (p[8] & 1) ? 1 : 0;
+    g_ctrl->tabletState = (p[8] & 2) ? 2 : 1;
+}
+
+static void logts();   // defined below, used by the demand thread
+
+// ---- PC -> tablet commands. Written from the demand thread while the
+// stream thread blocks in recv(); TCP is full duplex, one lock serialises
+// writers. g_cmdSock is the live connection or INVALID_SOCKET.
+static CRITICAL_SECTION g_cmdCs;
+static volatile SOCKET g_cmdSock = INVALID_SOCKET;
+
+static bool SendCommand(const char* cmd) {
+    EnterCriticalSection(&g_cmdCs);
+    SOCKET s = g_cmdSock;
+    bool ok = false;
+    if (s != INVALID_SOCKET) {
+        BYTE hdr[5]; UINT32 n = (UINT32)strlen(cmd);
+        hdr[0] = 0x10; hdr[1] = (BYTE)(n >> 24); hdr[2] = (BYTE)(n >> 16);
+        hdr[3] = (BYTE)(n >> 8); hdr[4] = (BYTE)n;
+        ok = send(s, (const char*)hdr, 5, 0) == 5 && send(s, cmd, (int)n, 0) == (int)n;
+    }
+    LeaveCriticalSection(&g_cmdCs);
+    return ok;
+}
+
+// Demand -> camera. Runs for the life of the process. Rules:
+//   demand      = consumerBeat or previewBeat within 3s
+//   READY + demand              -> "start" (at most every 2s until live)
+//   live + no demand for 5s     -> "stop"  (only for an on-demand tablet)
+// Everything is idempotent on the tablet, so re-sending is harmless; the
+// rate limits only keep the log and the wire quiet.
+static DWORD WINAPI DemandThread(LPVOID) {
+    ULONGLONG lastDemand = 0, lastStart = 0, lastStop = 0;
+    bool wasDemand = false;
+    for (;; Sleep(500)) {
+        if (!g_ctrl) continue;
+        ULONGLONG now = GetTickCount64();
+        g_ctrl->hostBeat = now;
+        const bool demand = (now - g_ctrl->consumerBeat < 3000) || (now - g_ctrl->previewBeat < 3000);
+        if (demand) lastDemand = now;
+        if (demand != wasDemand) {
+            logts(); printf("[DEMAND] %s\n", demand ? "an app is pulling frames" : "no consumer");
+            wasDemand = demand;
+        }
+        if (g_cmdSock == INVALID_SOCKET || !g_ctrl->tabletOnDemand) continue;
+        if (demand && g_ctrl->tabletState == 1 && now - lastStart >= 2000) {
+            logts(); printf("[DEMAND] -> tablet: start\n");
+            SendCommand("start"); lastStart = now;
+        } else if (!demand && g_ctrl->tabletState == 2 && now - lastDemand >= 5000
+                   && now - lastStop >= 2000) {
+            logts(); printf("[DEMAND] -> tablet: stop (idle 5s)\n");
+            SendCommand("stop"); lastStop = now;
+        }
+    }
+    return 0;
+}
 
 // Timestamp prefix for state-transition log lines (TDR forensics need
 // host events alignable with the System event log).
@@ -120,6 +214,18 @@ struct FrameWriter {
         if (!Lock()) return;
         memcpy(hdr->data, nv12, FRAME_SIZE);
         hdr->frameIndex++;
+        ReleaseMutex(hMutex);
+    }
+
+    // Legal black NV12 (Y 0x10, UV 0x80) for the current dims.
+    void PublishBlack() {
+        if (!Lock()) return;
+        const size_t y = (size_t)hdr->width * hdr->height;
+        if (y && y * 3 / 2 <= FRAME_SIZE) {
+            memset(hdr->data, 0x10, y);
+            memset(hdr->data + y, 0x80, y / 2);
+            hdr->frameIndex++;
+        }
         ReleaseMutex(hMutex);
     }
 
@@ -509,6 +615,8 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
     // closing the accepted client), and never reconnected to the next session.
     DWORD rcvMs = 15000;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvMs, sizeof(rcvMs));
+    EnterCriticalSection(&g_cmdCs); g_cmdSock = sock; LeaveCriticalSection(&g_cmdCs);
+    UINT32 lastTabletState = g_ctrl ? g_ctrl->tabletState : 0;
     for (;;) {
         if (!RecvAll(sock, header, 5)) {
             // Zero packets = adb false-accept with nothing behind it (idle
@@ -547,8 +655,23 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
             g_cableMon.Feed(payload, len);
             if (g_audioEnabled) g_audioMon.Feed(payload, len);
             break;
+        case 0x04: // hello/heartbeat: dims + state flags
+            NoteHello(payload, len);
+            if (g_ctrl && g_ctrl->tabletState != lastTabletState) {
+                logts(); printf("[NET] tablet %s%s\n",
+                    g_ctrl->tabletState == 2 ? "camera LIVE" : "READY, camera off",
+                    g_ctrl->tabletOnDemand ? " (on demand)" : "");
+                // Camera just went off: publish black so a consumer that
+                // starts later does not get a frozen picture from the last
+                // session while the tablet spins up.
+                if (lastTabletState == 2 && g_ctrl->tabletState == 1) fw.PublishBlack();
+                lastTabletState = g_ctrl->tabletState;
+            }
+            break;
         }
     }
+    EnterCriticalSection(&g_cmdCs); g_cmdSock = INVALID_SOCKET; LeaveCriticalSection(&g_cmdCs);
+    if (g_ctrl) g_ctrl->tabletState = 0;
 }
 
 // Read packets until the first config (0x01) arrives; set dims from it.
@@ -574,6 +697,19 @@ static bool WaitForConfig(SOCKET sock, FrameWriter& fw, H264Decoder& dec) {
             fw.SetDimensions(w, h);
             dec.Feed(payload + 8, len - 8); // SPS/PPS so the decoder starts ready
             printf("[OK] camera locked to %ux%u\n", w, h);
+            return true;
+        }
+        if (header[0] == 0x04 && len >= 9) {
+            // Hello carries the dims before any frame exists: enough to
+            // register the virtual camera, which is what lets Teams select
+            // it and thereby ask for the camera to be turned on.
+            UINT32 w = (payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3];
+            UINT32 h = (payload[4] << 24) | (payload[5] << 16) | (payload[6] << 8) | payload[7];
+            fw.SetDimensions(w, h);
+            NoteHello(payload, len);
+            printf("[OK] camera locked to %ux%u (tablet %s%s)\n", w, h,
+                (payload[8] & 2) ? "live" : "READY, camera off",
+                (payload[8] & 1) ? ", on demand" : "");
             return true;
         }
     }
@@ -621,6 +757,8 @@ int wmain(int argc, wchar_t** argv) {
     FrameWriter fw;
     if (!fw.Init()) return 1;
     printf("[OK] shared memory ready\n");
+    InitializeCriticalSection(&g_cmdCs);
+    ControlInit();
 
     H264Decoder dec;
     dec.Init();
@@ -673,6 +811,7 @@ int wmain(int argc, wchar_t** argv) {
     hr = cam->Start(nullptr);
     if (FAILED(hr)) { printf("[ERR] virtual camera Start 0x%08lx\n", hr); return 1; }
     printf("[OK] 'CatCam' virtual camera is LIVE\n");
+    CreateThread(nullptr, 0, DemandThread, nullptr, 0, nullptr);
 
     StreamLoop(s, dec, fw); // runs until disconnect
     // Reconnect loop. Same adb false-accept caveat as the initial wait, so

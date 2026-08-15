@@ -22,6 +22,31 @@ FrameServer::~FrameServer()
         CloseHandle(_hMapFile);
     if (_hMutex)
         CloseHandle(_hMutex);
+    if (_ctrl)
+        UnmapViewOfFile(_ctrl);
+    if (_hCtrlMap)
+        CloseHandle(_hCtrlMap);
+}
+
+void FrameServer::TouchConsumer()
+{
+    if (!_ctrl) {
+        // Lazy: the host normally creates it (NULL DACL, user session), but
+        // creating here is equally fine (same pattern as the frame mapping:
+        // fixed tiny size, whoever is first wins, OS zero-fills).
+        if (_ctrlRetry++ % 100 != 0) return;   // ~3s between attempts at 30fps
+        SECURITY_DESCRIPTOR sd;
+        InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+        SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
+        SECURITY_ATTRIBUTES sa{ sizeof(sa), &sd, FALSE };
+        _hCtrlMap = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+            0, sizeof(ControlBlock), CONTROL_MEM_NAME);
+        if (!_hCtrlMap) return;
+        _ctrl = (ControlBlock*)MapViewOfFile(_hCtrlMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ControlBlock));
+        if (!_ctrl) { CloseHandle(_hCtrlMap); _hCtrlMap = nullptr; return; }
+        if (_ctrl->magic == 0) { _ctrl->version = 1; _ctrl->magic = CONTROL_MAGIC; }
+    }
+    _ctrl->consumerBeat = GetTickCount64();
 }
 
 HRESULT FrameServer::Initialize()

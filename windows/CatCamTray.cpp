@@ -79,6 +79,33 @@ static int       healCount = 0;
 
 static HANDLE hMap = nullptr;
 static volatile SharedMemHeader* shm = nullptr;
+
+// Demand side channel (must match FrameServer.h). Tray writes previewBeat
+// while the preview window is open (the preview is a consumer too), reads
+// tabletState/tabletOnDemand for the tooltip and to skip the adb heal in
+// the normal on-demand idle state.
+#pragma pack(push, 1)
+struct ControlBlock {
+    UINT32 magic, version;
+    UINT64 consumerBeat, previewBeat;
+    UINT32 tabletState;      // 0 none, 1 READY (camera off), 2 live
+    UINT32 tabletOnDemand;
+    UINT64 hostBeat;
+    UINT8  reserved[64 - 40];
+};
+#pragma pack(pop)
+static HANDLE hCtrlMap = nullptr;
+static volatile ControlBlock* ctrl = nullptr;
+static bool EnsureControl() {
+    if (ctrl) return true;
+    if (!hCtrlMap) hCtrlMap = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"Global\\CatCam_Control");
+    if (!hCtrlMap) return false;
+    ctrl = (volatile ControlBlock*)MapViewOfFile(hCtrlMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ControlBlock));
+    return ctrl != nullptr;
+}
+static bool TabletReadyOnDemand() {
+    return EnsureControl() && ctrl->tabletOnDemand && ctrl->tabletState == 1;
+}
 static UINT64 lastIdx = 0;
 static ULONGLONG lastIdxChange = 0;
 
@@ -461,6 +488,9 @@ static void OpenPreview() {
 }
 
 static void PreviewTick() {
+    // The preview is a consumer: an on-demand tablet turns its camera on
+    // for it exactly like for Teams.
+    if (prevWnd && EnsureControl()) ctrl->previewBeat = GetTickCount64();
     if (!prevWnd || !EnsureSharedMem()) return;
     const UINT32 w = shm->width, h = shm->height;
     if (!w || !h) return;
@@ -608,15 +638,20 @@ static HICON BuildIcon(CamState st) {
 static const wchar_t* StateTip(CamState st) {
     switch (st) {
     case CamState::Green:  return L"CatCam \u00b7 LIVE";
-    case CamState::Yellow: return L"CatCam \u00b7 waiting for tablet";
+    case CamState::Yellow: return TabletReadyOnDemand()
+        ? L"CatCam \u00b7 ready, camera off until an app uses it"
+        : L"CatCam \u00b7 waiting for tablet";
     case CamState::Red:    return L"CatCam \u00b7 host down, restarting";
     default:               return L"CatCam \u00b7 starting";
     }
 }
 
+static bool shownReadyTip = false;
 static void UpdateIcon(CamState st) {
     if (iconHidden) return;
-    if (stateEverShown && st == shownState) return;
+    const bool readyTip = (st == CamState::Yellow) && TabletReadyOnDemand();
+    if (stateEverShown && st == shownState && readyTip == shownReadyTip) return;
+    shownReadyTip = readyTip;
     HICON fresh = BuildIcon(st);
     if (!fresh) return;
     HICON old = nid.hIcon;
@@ -762,7 +797,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             // having moved to a new IP (DHCP), so restart the host against
             // the fresh beacon; same-IP stalls are the host's own retry
             // loop's job.
-            if (st == CamState::Yellow) {
+            if (st == CamState::Yellow && !TabletReadyOnDemand()) {
                 ULONGLONG now = GetTickCount64();
                 if (++stalledSecs >= 5 && now >= nextHealAt) {
                     if (WifiEnabled()) {

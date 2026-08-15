@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var segNight: TextView
     private lateinit var segUsb: TextView
     private lateinit var segWifi: TextView
+    private lateinit var segAlways: TextView
+    private lateinit var segDemand: TextView
     private lateinit var audioBar: android.widget.ProgressBar
     private lateinit var preview: TextureView
 
@@ -99,6 +101,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             // Camera switch finished: un-dim the stale-frame cover.
             if (StreamerService.statusText.startsWith("Streaming") && preview.alpha < 1f) {
                 preview.animate().alpha(1f).setDuration(200).start()
+            }
+            // READY: the last frame on screen is stale (camera off), dim it
+            // so the preview never quietly claims to be live.
+            if (!StreamerService.cameraLive && StreamerService.statusText != "Idle"
+                    && preview.alpha > 0.31f) {
+                preview.animate().alpha(0.3f).setDuration(200).start()
             }
             handler.postDelayed(this, 500)
         }
@@ -142,6 +150,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         segNight = findViewById(R.id.seg_night)
         segUsb = findViewById(R.id.seg_usb)
         segWifi = findViewById(R.id.seg_wifi)
+        segAlways = findViewById(R.id.seg_always)
+        segDemand = findViewById(R.id.seg_demand)
         audioBar = findViewById(R.id.audio_level)
         preview = findViewById(R.id.preview)
         preview.surfaceTextureListener = this
@@ -159,6 +169,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         segNight.setOnClickListener { setDay(false) }
         segUsb.setOnClickListener { setTransport(false) }
         segWifi.setOnClickListener { setTransport(true) }
+        segAlways.setOnClickListener { setOnDemand(false) }
+        segDemand.setOnClickListener { setOnDemand(true) }
 
         updateZoomLabel()
         updateTuningLabels()
@@ -169,6 +181,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         handler.post(ticker)
         handler.post(levelTicker)
         handleUiAction(intent)
+        // On demand: opening the app is enough. It goes READY by itself so
+        // the PC can turn the camera on later with nobody at the tablet
+        // (the whole point on Wi-Fi, where the PC cannot launch the app).
+        if (StreamerService.onDemand && StreamerService.statusText == "Idle" && hasPerms())
+            startStreaming()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -246,6 +263,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         updateTuningLabels()
     }
 
+    // Always on = Start means camera on (cat cam). On demand = Start means
+    // READY, the PC turns the camera on when an app pulls frames.
+    private fun setOnDemand(on: Boolean) {
+        StreamerService.setOnDemand(this, on)
+        updateTuningLabels()
+    }
+
     // ------------------------------------------------------------- state UI
 
     private fun updateStatusPill() {
@@ -255,6 +279,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 // Actual transport, read from where the connection came from.
                 ("LIVE · " + if (StreamerService.clientViaWifi == true) "Wi-Fi" else "USB") to COLOR_LIVE
             s == "Idle" -> "Idle" to COLOR_IDLE
+            // READY: connected, camera off, the PC decides. Amber like
+            // waiting (nothing is being sent), the words say why.
+            s.startsWith("Ready") ->
+                ("READY · " + (if (StreamerService.clientViaWifi == true) "Wi-Fi" else "USB")
+                    + " · camera off") to COLOR_WAIT
             // While waiting, show this tablet's address: it is what the PC
             // side needs for cable-free (direct TCP) mode.
             s.startsWith("Waiting") || s.startsWith("Streaming") ->
@@ -315,6 +344,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         styleSeg(segNight, !StreamerService.dayMode)
         styleSeg(segUsb, !StreamerService.transportWifi)
         styleSeg(segWifi, StreamerService.transportWifi)
+        styleSeg(segAlways, !StreamerService.onDemand)
+        styleSeg(segDemand, StreamerService.onDemand)
     }
 
     // ------------------------------------------------------------- plumbing

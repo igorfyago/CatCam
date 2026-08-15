@@ -19,6 +19,13 @@ set DEFS=/D _WIN32_WINNT=0x0A00 /D NTDDI_VERSION=0x0A00000B /D UNICODE /D _UNICO
 set INCS=/I "%SDK_INC%\um" /I "%SDK_INC%\shared" /I "%SDK_INC%\ucrt"
 set LIBDIRS=/LIBPATH:"%SDK_LIB%\um\x64" /LIBPATH:"%SDK_LIB%\ucrt\x64"
 
+if not exist checkfix_obj mkdir checkfix_obj
+echo --- dll ---
+cl /nologo /std:c++17 /EHsc /LD %DEFS% %INCS% ^
+   DllMain.cpp MediaSource.cpp MediaStream.cpp FrameServer.cpp ^
+   /Fo:checkfix_obj\ /Fe:checkfix_source.dll /link %LIBDIRS% /DEF:CatCamSource.def ^
+   /IMPLIB:checkfix_source.lib mf.lib mfplat.lib mfuuid.lib user32.lib ole32.lib advapi32.lib || exit /b 1
+
 echo --- host ---
 cl /nologo /std:c++17 /EHsc %DEFS% %INCS% CatCamHost.cpp ^
    /Fo:checkfix_host.obj /Fe:checkfix_host.exe ^

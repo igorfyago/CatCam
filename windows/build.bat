@@ -35,7 +35,7 @@ echo === CatCamTray.exe ===
 cl /nologo /std:c++17 /EHsc /O2 %DEFS% %INCS% ^
    CatCamTray.cpp /Fe:CatCamTray.exe /link %LIBDIRS% /MANIFESTUAC:NO ^
    /MANIFEST:EMBED /MANIFESTINPUT:CatCamTray.manifest ^
-   user32.lib shell32.lib gdi32.lib gdiplus.lib advapi32.lib || exit /b 1
+   user32.lib shell32.lib gdi32.lib gdiplus.lib advapi32.lib ws2_32.lib || exit /b 1
 
 echo === DONE ===
 endlocal

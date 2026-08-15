@@ -56,6 +56,17 @@ import kotlin.concurrent.thread
  *   type 0x01 = video config (SPS+PPS from MediaCodec INFO_OUTPUT_FORMAT_CHANGED, raw csd-0/csd-1)
  *   type 0x02 = video frame (Annex-B-ish raw MediaCodec output buffer)
  *   type 0x03 = audio PCM chunk (16kHz, 16-bit, mono)
+ *   type 0x04 = hello/heartbeat: [w:4][h:4][flags:1], bit0 = on-demand mode,
+ *               bit1 = camera live. Sent on connect and every 5s, so the PC
+ *               can register the virtual camera before any frame exists and
+ *               knows whether it is allowed to drive the camera.
+ *   PC -> tablet (same framing, the only packets that flow this way):
+ *   type 0x10 = command, ASCII payload: "start" | "stop" | "flip"
+ *
+ * On-demand mode: the service sits in READY (connected, camera and mic OFF,
+ * heartbeat only) and the PC turns the camera on when an app actually pulls
+ * frames from the virtual camera and off again when nothing does. Always-on
+ * mode (default, the cat cam) behaves as before: Start = camera on.
  *
  * The PC connects to us. USB mode: `adb forward tcp:9000 tcp:9000`, PC connects to localhost:9000.
  * WiFi mode: PC connects to <tablet-ip>:9000.
@@ -110,6 +121,23 @@ class StreamerService : Service() {
         private const val KEY_DAY_MODE = "day_mode"
         private const val KEY_TRANSPORT_WIFI = "transport_wifi"
         private const val KEY_TRANSPORT_GEN = "transport_gen"
+        private const val KEY_ON_DEMAND = "on_demand"
+
+        // On-demand: the PC drives the camera (READY state, camera off until
+        // an app on the PC pulls frames). Off = always-on, the cat cam.
+        @Volatile var onDemand = false
+            private set
+        // Camera + mic actually running right now (READY = running && !live).
+        @Volatile var cameraLive = false
+            private set
+
+        fun setOnDemand(ctx: Context, on: Boolean) {
+            if (on == onDemand) return
+            onDemand = on
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_ON_DEMAND, on).apply()
+            instance?.applyOnDemand()
+        }
 
         // Multiplicative per tap: even perceived steps across the whole range
         // (1x to this HAL's 10x in ~10 taps). Additive steps feel huge near 1x
@@ -180,6 +208,7 @@ class StreamerService : Service() {
             dayMode = sp.getBoolean(KEY_DAY_MODE, false)
             transportWifi = sp.getBoolean(KEY_TRANSPORT_WIFI, false)
             transportGen = sp.getInt(KEY_TRANSPORT_GEN, 0)
+            onDemand = sp.getBoolean(KEY_ON_DEMAND, false)
         }
 
         // UI entry: clamp, persist for this camera, and push into the live
@@ -269,9 +298,12 @@ class StreamerService : Service() {
         }
     }
 
-    private val running = AtomicBoolean(false)
-    private var wakeLock: PowerManager.WakeLock? = null
+    private val running = AtomicBoolean(false)   // service up (READY or live)
+    private val camOn = AtomicBoolean(false)     // camera + mic + encoder running
+    private var wakeLock: PowerManager.WakeLock? = null    // PARTIAL, service lifetime
+    private var screenLock: PowerManager.WakeLock? = null  // SCREEN_BRIGHT, camera lifetime
     private var wifiLock: WifiManager.WifiLock? = null
+    @Volatile private var clientIp = ""
     private var serverSocket: ServerSocket? = null
     @Volatile private var out: DataOutputStream? = null
 
@@ -322,35 +354,146 @@ class StreamerService : Service() {
     private fun startStreaming() {
         if (!running.compareAndSet(false, true)) return
         loadCameraPref(this)
-        Log.i(TAG, "Starting streamer")
+        Log.i(TAG, "Starting streamer (onDemand=$onDemand)")
         startForegroundWithNotification()
         acquireWakeLock()
 
         thread(name = "CatCamServer") { serverLoop() }
-        thread(name = "CatCamAudio") { audioLoop() }
         thread(name = "CatCamBeacon") { beaconLoop() }
-        openCameraAndEncoder()
+        // On demand: sit in READY, the PC says when. Otherwise camera on now.
+        if (onDemand) updateStatus() else cameraOn()
     }
 
     private fun stopStreaming() {
         running.set(false)
+        cameraOff()
         out = null
         sendQ.clear()
-        glPreviewActive = false
-        reqBuilder = null
-        audioLevel = 0f
         try { serverSocket?.close() } catch (_: Exception) {}
-        try { captureSession?.close() } catch (_: Exception) {}
-        try { cameraDevice?.close() } catch (_: Exception) {}
-        try { glRotator?.release() } catch (_: Exception) {}
-        glRotator = null
-        try { encoder?.stop(); encoder?.release() } catch (_: Exception) {}
-        cameraThread?.quitSafely()
         wakeLock?.let { if (it.isHeld) it.release() }
         wifiLock?.let { if (it.isHeld) it.release() }
         clientConnected = false
         statusText = "Idle"
     }
+
+    // ------------------------------------------------------- camera on / off
+    // The service (socket, beacon, notification, partial wake lock) and the
+    // camera (Camera2 + encoder + mic + bright screen) have separate
+    // lifetimes now: READY is the service up with the camera off.
+
+    private fun cameraOn() {
+        if (!running.get()) return
+        if (!camOn.compareAndSet(false, true)) return
+        cameraLive = true
+        Log.i(TAG, "camera ON")
+        acquireScreenLock()
+        thread(name = "CatCamAudio") { audioLoop() }
+        openCameraAndEncoder()
+        updateStatus(); updateNotification(); sendHello()
+    }
+
+    private fun cameraOff() {
+        if (!camOn.compareAndSet(true, false)) return
+        cameraLive = false
+        Log.i(TAG, "camera OFF")
+        glPreviewActive = false
+        reqBuilder = null
+        audioLevel = 0f
+        try { captureSession?.close() } catch (_: Exception) {}
+        try { cameraDevice?.close() } catch (_: Exception) {}
+        try { glRotator?.release() } catch (_: Exception) {}
+        glRotator = null
+        try { encoder?.stop(); encoder?.release() } catch (_: Exception) {}
+        encoder = null
+        captureSession = null
+        cameraDevice = null
+        cameraThread?.quitSafely()
+        cameraThread = null
+        // Queued video from the dead encoder is undecodable noise for the PC.
+        sendQ.clear()
+        releaseScreenLock()
+        updateStatus(); updateNotification(); sendHello()
+    }
+
+    // The on-demand switch flipped while the service runs. Always-on wants
+    // the camera up now; on-demand tells the PC (via the hello flag) and
+    // lets it decide, so a call in progress is not cut.
+    fun applyOnDemand() {
+        if (!running.get()) return
+        if (!onDemand) cameraOn()
+        updateStatus(); sendHello()
+    }
+
+    private fun updateStatus() {
+        statusText = when {
+            !running.get() -> "Idle"
+            clientConnected && camOn.get() -> "Streaming to $clientIp"
+            clientConnected -> "Ready · $clientIp"
+            else -> "Waiting for PC on :$PORT"
+        }
+    }
+
+    // What the PC may tell us. Idempotent: start while live and stop while
+    // READY are no-ops. Only an on-demand tablet lets the PC switch the
+    // camera off; in always-on mode "stop" is ignored by design.
+    private fun handleCommand(cmd: String) {
+        Log.i(TAG, "PC command: $cmd")
+        when (cmd) {
+            "start" -> cameraOn()
+            "stop" -> if (onDemand) cameraOff()
+            "flip" -> thread(name = "CatCamFlip") {
+                preferFrontCamera = !preferFrontCamera
+                saveCameraPref(this)
+                loadCameraPref(this)
+                if (camOn.get()) {
+                    cameraOff()
+                    Thread.sleep(800) // camera close settles (lesson 37 race)
+                    cameraOn()
+                }
+            }
+        }
+    }
+
+    // Reads the PC's commands. EOF here is the fastest disconnect signal we
+    // have (the sender only notices on its next write), so tear the client
+    // down and let the server loop accept the next one.
+    private fun readerLoop(client: Socket) {
+        try {
+            val inp = java.io.DataInputStream(client.getInputStream())
+            while (running.get() && clientConnected) {
+                val type = inp.readUnsignedByte()
+                val len = inp.readInt()
+                if (len < 0 || len > 4096) break
+                val payload = ByteArray(len)
+                inp.readFully(payload)
+                if (type == 0x10) handleCommand(String(payload, Charsets.US_ASCII).trim())
+            }
+        } catch (e: Exception) {
+            Log.i(TAG, "reader: ${e.message}")
+        }
+        notifyClientGone()
+    }
+
+    private fun encodeDims(): Pair<Int, Int> {
+        // Output orientation from how the device is currently held, by the
+        // display's ACTUAL shape (a landscape-natural tablet reports
+        // ROTATION_0 lying sideways). Same rule for the hello and the encoder.
+        val dm = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+        val disp = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION") disp?.getRealMetrics(metrics)
+        val heldPortrait = metrics.heightPixels >= metrics.widthPixels
+        return if (heldPortrait) 720 to 1280 else 1280 to 720
+    }
+
+    private fun helloPayload(): ByteArray {
+        val (w, h) = encodeDims()
+        val flags = (if (onDemand) 1 else 0) or (if (camOn.get()) 2 else 0)
+        return java.nio.ByteBuffer.allocate(9).putInt(w).putInt(h).put(flags.toByte()).array()
+    }
+
+    // State changed: tell the PC now rather than at the next 5s heartbeat.
+    private fun sendHello() { sendPacket(0x04, helloPayload()) }
 
     override fun onCreate() { super.onCreate(); instance = this }
 
@@ -444,11 +587,16 @@ class StreamerService : Service() {
                     val o = DataOutputStream(client.getOutputStream())
                     sendQ.clear()
                     out = o
+                    clientIp = client.inetAddress.hostAddress ?: "?"
                     clientConnected = true
-                    statusText = "Streaming to ${client.inetAddress.hostAddress}"
-                    // New client joined mid-GOP: re-send SPS/PPS and force a keyframe
-                    // so the decoder has a valid starting point.
-                    resendConfigAndSyncFrame()
+                    updateStatus()
+                    // PC -> tablet commands ride the same socket.
+                    thread(name = "CatCamReader") { readerLoop(client) }
+                    // New client joined mid-GOP: re-send SPS/PPS and force a
+                    // keyframe so the decoder has a valid starting point.
+                    // (READY has no encoder, and a stale config would only
+                    // make the PC size a decoder that gets no frames.)
+                    if (camOn.get()) resendConfigAndSyncFrame()
                     // This thread becomes the single sender until the socket
                     // dies. Blocking HERE is fine: only the network waits on
                     // the network; capture keeps producing into the queue.
@@ -461,7 +609,7 @@ class StreamerService : Service() {
                 out = null
                 clientConnected = false
                 clientViaWifi = null
-                if (running.get()) statusText = "Waiting for PC on :$PORT"
+                if (running.get()) updateStatus()
             }
         }
     }
@@ -527,10 +675,20 @@ class StreamerService : Service() {
         var sent = 0
         var lastStat = android.os.SystemClock.elapsedRealtime()
         var lastAbr = lastStat
+        var lastHello = 0L
         // Fresh client, fresh link: start optimistic and let AIMD find it.
         abrReset()
         try {
             while (running.get() && clientConnected) {
+                // Heartbeat first and every 5s: in READY nothing else flows,
+                // and the PC drops a peer silent for 15s. It also carries the
+                // dims + flags the PC needs before any frame exists.
+                val hb = android.os.SystemClock.elapsedRealtime()
+                if (hb - lastHello >= 5000) {
+                    val hello = helloPayload()
+                    o.writeByte(0x04); o.writeInt(hello.size); o.write(hello); o.flush()
+                    lastHello = hb
+                }
                 val pkt = sendQ.pollFirst(500, TimeUnit.MILLISECONDS) ?: continue
                 o.writeByte(pkt.first.toInt())
                 o.writeInt(pkt.second.size)
@@ -648,6 +806,8 @@ class StreamerService : Service() {
 
         mgr.openCamera(chosenId, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) {
+                // cameraOff() may have run while the open was in flight.
+                if (!camOn.get()) { device.close(); return }
                 cameraDevice = device
                 startEncoderAndSession(device)
             }
@@ -714,15 +874,13 @@ class StreamerService : Service() {
             // shortcut was only true on portrait-natural hardware; a
             // landscape-natural tablet (Pixel Tablet, most 10-inch devices)
             // reports ROTATION_0 while lying sideways.
+            val dims = encodeDims()   // same rule as the hello packet
+            encWidth = dims.first
+            encHeight = dims.second
+            val heldPortrait = encWidth < encHeight
             val dm = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
-            val disp = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
-            val dispRot = disp?.rotation ?: Surface.ROTATION_0
-            val metrics = android.util.DisplayMetrics()
-            @Suppress("DEPRECATION") disp?.getRealMetrics(metrics)
-            val heldPortrait = metrics.heightPixels >= metrics.widthPixels
-
-            encWidth = if (heldPortrait) 720 else 1280
-            encHeight = if (heldPortrait) 1280 else 720
+            val dispRot = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation
+                ?: Surface.ROTATION_0
             // Measured via dumped PC frames (lessons 21 and 24, HANDOFF.md):
             // on SM-T220 the stMatrix already delivers portrait-upright content
             // at rotate 0 for BOTH cameras; added rotation only spins it
@@ -896,7 +1054,7 @@ class StreamerService : Service() {
 
     private fun drainEncoder(enc: MediaCodec) {
         val info = MediaCodec.BufferInfo()
-        while (running.get()) {
+        while (running.get() && camOn.get()) {
             try {
                 when (val idx = enc.dequeueOutputBuffer(info, 100_000)) {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -925,7 +1083,7 @@ class StreamerService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                if (running.get()) Log.w(TAG, "drainEncoder: ${e.message}")
+                if (running.get() && camOn.get()) Log.w(TAG, "drainEncoder: ${e.message}")
             }
         }
     }
@@ -1078,7 +1236,7 @@ class StreamerService : Service() {
             watchWiredOut()
             rec.startRecording()
             Log.i(TAG, "Audio recording @${AUDIO_RATE}Hz")
-            while (running.get()) {
+            while (running.get() && camOn.get()) {
                 val n = rec.read(chunk, 0, chunk.size)
                 if (n > 0) {
                     sendPacket(0x03, chunk.copyOf(n))
@@ -1102,23 +1260,32 @@ class StreamerService : Service() {
 
     // ------------------------------------------------------------- plumbing
 
-    private fun startForegroundWithNotification() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "CatCam streaming", NotificationManager.IMPORTANCE_LOW))
-
+    private fun buildNotification(): Notification {
         val stopIntent = PendingIntent.getService(
             this, 0,
             Intent(this, StreamerService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE)
-
-        val notif: Notification = Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("CatCam")
-            .setContentText("Streaming camera + mic to PC")
+            .setContentText(if (camOn.get()) "Streaming camera + mic to PC"
+                            else "Ready · PC turns the camera on")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .addAction(Notification.Action.Builder(null, "Stop", stopIntent).build())
             .setOngoing(true)
             .build()
+    }
+
+    private fun updateNotification() {
+        if (!running.get()) return
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(1, buildNotification())
+    }
+
+    private fun startForegroundWithNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "CatCam streaming", NotificationManager.IMPORTANCE_LOW))
+        val notif = buildNotification()
 
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(1, notif,
@@ -1130,15 +1297,11 @@ class StreamerService : Service() {
 
     private fun acquireWakeLock() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        // SCREEN_BRIGHT (not PARTIAL): while streaming the tablet behaves
-        // like a video player, screen on at full brightness, never dims,
-        // never sleeps, app minimized or not. The screen never turning off
-        // also means the keyguard never auto-engages. Deprecated API but the
-        // only app-level way to hold the screen from a service; still works.
-        @Suppress("DEPRECATION")
-        wakeLock = pm.newWakeLock(
-            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
-            "catcam:stream")
+        // PARTIAL for the service lifetime: READY must survive the screen
+        // going dark (socket, heartbeat, beacon), which is exactly the state
+        // an on-demand tablet spends most of its day in. The bright screen
+        // is the camera's business (acquireScreenLock).
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "catcam:service")
             .also { it.acquire(12 * 60 * 60 * 1000L) } // 12h cap, re-acquired on restart
         // WiFi transport: without a low-latency lock the radio power-saves
         // between beacons and every burst eats 100ms+ stalls (lesson 37).
@@ -1146,5 +1309,26 @@ class StreamerService : Service() {
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "catcam:wifi")
             .also { it.acquire() }
+    }
+
+    // SCREEN_BRIGHT while the camera runs: the tablet behaves like a video
+    // player, screen on at full brightness, never dims, app minimized or
+    // not (and the keyguard never auto-engages). ACQUIRE_CAUSES_WAKEUP so a
+    // PC "start" lights a dark READY tablet. Deprecated API but the only
+    // app-level way to hold the screen from a service; still works.
+    private fun acquireScreenLock() {
+        if (screenLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        @Suppress("DEPRECATION")
+        screenLock = pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP
+                or PowerManager.ON_AFTER_RELEASE,
+            "catcam:stream")
+            .also { it.acquire(12 * 60 * 60 * 1000L) }
+    }
+
+    private fun releaseScreenLock() {
+        screenLock?.let { if (it.isHeld) it.release() }
+        screenLock = null
     }
 }

@@ -192,6 +192,8 @@ STDMETHODIMP VirtualCamMediaStream::RequestSample(IUnknown* pToken)
         UINT32 n = ++_activeReqs;
         if (n <= 3) Log("RequestSample #%u (active)", n);
     }
+    // Demand signal for the on-demand tablet: an app is pulling frames.
+    _frameServer->TouchConsumer();
 
     // Cache sized to the advertised media type; starts as a valid black NV12
     // frame (Y 0x10, UV 0x80) so the very first delivery is a legal,
