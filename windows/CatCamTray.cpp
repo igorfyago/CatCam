@@ -74,6 +74,8 @@ static ULONGLONG nextStartAllowed = 0;   // host restart cooldown
 static ULONGLONG hostStartedAt = 0;      // for "did it run a real session?"
 static DWORD     restartDelayMs = 3000;  // escalates while the host keeps dying
 static int       hostExitStreak = 0;     // consecutive short-lived hosts
+static DWORD     healIntervalMs = 30000; // yellow-heal backoff (30s -> 10min)
+static int       healCount = 0;
 
 static HANDLE hMap = nullptr;
 static volatile SharedMemHeader* shm = nullptr;
@@ -508,7 +510,8 @@ static void RunAdbForward() {
     if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
             CREATE_NO_WINDOW, nullptr, dir, &si, &cpi)) {
         CloseHandle(cpi.hProcess); CloseHandle(cpi.hThread);
-        Log("frames stalled: re-established adb forward tcp:9000");
+        if (healCount < 2)
+            Log("frames stalled: re-established adb forward tcp:9000 (next heals back off silently)");
     } else {
         Log("adb forward heal failed to launch (%lu)", GetLastError());
     }
@@ -768,10 +771,19 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     } else {
                         RunAdbForward();
                     }
-                    nextHealAt = now + 30000;
+                    // Yellow is now the NORMAL idle state (host waits for
+                    // the tablet in-process), not a broken forward. A flat
+                    // 30s heal spawned cmd+adb 2,880 times a day and logged
+                    // every one. Back off: 30s doubling to 10min; reset the
+                    // moment the state changes.
+                    nextHealAt = now + healIntervalMs;
+                    if (healIntervalMs < 600000) healIntervalMs *= 2;
+                    healCount++;
                 }
             } else {
                 stalledSecs = 0;
+                healIntervalMs = 30000;
+                healCount = 0;
             }
         }
         return 0;

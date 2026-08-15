@@ -511,10 +511,14 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvMs, sizeof(rcvMs));
     for (;;) {
         if (!RecvAll(sock, header, 5)) {
-            logts();
-            printf(WSAGetLastError() == WSAETIMEDOUT
-                ? "[NET] tablet silent 15s, dropping connection\n"
-                : "[NET] tablet disconnected\n");
+            // Zero packets = adb false-accept with nothing behind it (idle
+            // tablet). Not a disconnect, not worth a line every retry.
+            if (pkts > 0) {
+                logts();
+                printf(WSAGetLastError() == WSAETIMEDOUT
+                    ? "[NET] tablet silent 15s, dropping connection\n"
+                    : "[NET] tablet disconnected\n");
+            }
             break;
         }
         UINT32 len = (header[1] << 24) | (header[2] << 16) | (header[3] << 8) | header[4];
