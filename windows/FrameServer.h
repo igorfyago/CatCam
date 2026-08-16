@@ -38,7 +38,7 @@ struct ControlBlock
     UINT8   tuneFlags;
     INT16   zoomX100;
     INT8    ev, tone;
-    UINT8   wb, focusMode, focusPos, spare;
+    UINT8   wb, focusMode, focusPos, micLevel;
 };
 #pragma pack(pop)
 #define CONTROL_MAGIC 0x4C544343u   // "CCTL" little-endian

@@ -29,6 +29,7 @@
 #include <wrl/client.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 #include <atomic>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -82,7 +83,7 @@ struct ControlBlock {
     UINT8  wb;               // CONTROL_AWB_MODE value (1 auto, 2 incandescent, 3 fluorescent, 5 daylight, 6 cloudy)
     UINT8  focusMode;        // 0 auto, 1 locked, 2 manual
     UINT8  focusPos;         // 0 near .. 100 far
-    UINT8  spare;
+    UINT8  micLevel;         // 0..100, host-measured from the tablet PCM (tablet meter curve)
 };
 #pragma pack(pop)
 static const UINT32 CONTROL_MAGIC = 0x4C544343u;
@@ -708,6 +709,16 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
             g_wavDump.Write(payload, len);
             g_cableMon.Feed(payload, len);
             if (g_audioEnabled) g_audioMon.Feed(payload, len);
+            if (g_ctrl && len >= 2) { // mic meter for the PC preview, tablet curve
+                double sum = 0; const int n = (int)len / 2;
+                const short* s16 = (const short*)payload;
+                for (int i = 0; i < n; i++) sum += (double)s16[i] * s16[i];
+                const double rms = sqrt(sum / n);
+                const double db = 20.0 * log10((rms < 1.0 ? 1.0 : rms) / 32768.0);
+                double inst = ((db + 50.0) / 50.0) * 1.4; if (inst < 0) inst = 0; if (inst > 1) inst = 1;
+                static double level = 0; level = inst > level * 0.75 ? inst : level * 0.75;
+                g_ctrl->micLevel = (UINT8)(level * 100.0 + 0.5);
+            }
             break;
         case 0x04: // hello/heartbeat: dims + state flags
             NoteHello(payload, len);
@@ -718,7 +729,7 @@ static void StreamLoop(SOCKET sock, H264Decoder& dec, FrameWriter& fw) {
                 // Camera just went off: publish black so a consumer that
                 // starts later does not get a frozen picture from the last
                 // session while the tablet spins up.
-                if (lastTabletState == 2 && g_ctrl->tabletState == 1) fw.PublishBlack();
+                if (lastTabletState == 2 && g_ctrl->tabletState == 1) { fw.PublishBlack(); g_ctrl->micLevel = 0; }
                 lastTabletState = g_ctrl->tabletState;
             }
             break;

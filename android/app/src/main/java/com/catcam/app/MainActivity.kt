@@ -65,6 +65,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var toneLabel: TextView
     private lateinit var segDay: TextView
     private lateinit var segNight: TextView
+    private lateinit var evDown: TextView
+    private lateinit var evUp: TextView
+    private lateinit var evLabel: TextView
+    private lateinit var wbBtn: TextView
+    private lateinit var focusAuto: TextView
+    private lateinit var focusLock: TextView
+    private lateinit var focusNear: TextView
+    private lateinit var focusFar: TextView
+    private lateinit var torchBtn: TextView
+    private lateinit var mirrorBtn: TextView
     private lateinit var segUsb: TextView
     private lateinit var segWifi: TextView
     private lateinit var audioBar: android.widget.ProgressBar
@@ -146,6 +156,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         toneLabel = findViewById(R.id.tone_label)
         segDay = findViewById(R.id.seg_day)
         segNight = findViewById(R.id.seg_night)
+        evDown = findViewById(R.id.ev_down); evUp = findViewById(R.id.ev_up); evLabel = findViewById(R.id.ev_label)
+        wbBtn = findViewById(R.id.wb_btn)
+        focusAuto = findViewById(R.id.focus_auto); focusLock = findViewById(R.id.focus_lock)
+        focusNear = findViewById(R.id.focus_near); focusFar = findViewById(R.id.focus_far)
+        torchBtn = findViewById(R.id.torch_btn); mirrorBtn = findViewById(R.id.mirror_btn)
         segUsb = findViewById(R.id.seg_usb)
         segWifi = findViewById(R.id.seg_wifi)
         audioBar = findViewById(R.id.audio_level)
@@ -161,6 +176,17 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         zoomInBtn.setOnClickListener { stepZoom(StreamerService.ZOOM_STEP) }
         toneCoolBtn.setOnClickListener { stepTone(-1) }
         toneWarmBtn.setOnClickListener { stepTone(+1) }
+        // Same setters the PC drives over the wire: the two surfaces cannot
+        // disagree, and every label re-reads the service state on the tick.
+        evDown.setOnClickListener { StreamerService.setEv(this, StreamerService.evSteps - 1); updateTuningLabels() }
+        evUp.setOnClickListener { StreamerService.setEv(this, StreamerService.evSteps + 1); updateTuningLabels() }
+        wbBtn.setOnClickListener { StreamerService.wbNext(); updateTuningLabels() }
+        focusAuto.setOnClickListener { StreamerService.setFocusAuto(); updateTuningLabels() }
+        focusLock.setOnClickListener { StreamerService.setFocusLock(); updateTuningLabels() }
+        focusNear.setOnClickListener { StreamerService.focusStep(nearer = true); updateTuningLabels() }
+        focusFar.setOnClickListener { StreamerService.focusStep(nearer = false); updateTuningLabels() }
+        torchBtn.setOnClickListener { StreamerService.setTorch(!StreamerService.torchOn); updateTuningLabels() }
+        mirrorBtn.setOnClickListener { StreamerService.setMirror(this, !StreamerService.mirrorOn); updateTuningLabels() }
         segDay.setOnClickListener { setDay(true) }
         segNight.setOnClickListener { setDay(false) }
         segUsb.setOnClickListener { setTransport(false) }
@@ -343,6 +369,27 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         styleSeg(segNight, !StreamerService.dayMode)
         styleSeg(segUsb, !StreamerService.transportWifi)
         styleSeg(segWifi, StreamerService.transportWifi)
+        // Exposure / WB / focus / torch / mirror: values from the service.
+        val ev = StreamerService.evSteps
+        evLabel.text = if (ev > 0) "+$ev" else "$ev"
+        val live = StreamerService.cameraLive
+        val evOk = live && StreamerService.evRange.upper > StreamerService.evRange.lower
+        evDown.alpha = if (evOk) 1f else 0.4f; evUp.alpha = if (evOk) 1f else 0.4f
+        wbBtn.text = when (StreamerService.wbMode) {
+            2 -> "WB incandescent"; 3 -> "WB fluorescent"; 5 -> "WB daylight"; 6 -> "WB cloudy"; else -> "WB auto"
+        }
+        styleSeg(wbBtn, StreamerService.wbMode != 1)
+        val af = StreamerService.focusSupported
+        val manual = StreamerService.manualFocusSupported
+        focusAuto.text = if (af) "Focus auto" else "Fixed focus"
+        styleSeg(focusAuto, af && StreamerService.focusMode == 0)
+        styleSeg(focusLock, af && StreamerService.focusMode == 1)
+        focusNear.text = if (StreamerService.focusMode == 2) "Nearer" else "Nearer"
+        focusAuto.alpha = if (af && live) 1f else 0.4f; focusLock.alpha = if (af && live) 1f else 0.4f
+        focusNear.alpha = if (manual && live) 1f else 0.4f; focusFar.alpha = if (manual && live) 1f else 0.4f
+        styleSeg(torchBtn, StreamerService.torchOn)
+        torchBtn.alpha = if (StreamerService.torchSupported && live) 1f else 0.4f
+        styleSeg(mirrorBtn, StreamerService.mirrorOn)
     }
 
     // ------------------------------------------------------------- plumbing

@@ -124,7 +124,7 @@ struct ControlBlock {
     UINT8  wb;               // CONTROL_AWB_MODE value (1 auto, 2 incandescent, 3 fluorescent, 5 daylight, 6 cloudy)
     UINT8  focusMode;        // 0 auto, 1 locked, 2 manual
     UINT8  focusPos;         // 0 near .. 100 far
-    UINT8  spare;
+    UINT8  micLevel;         // 0..100, host-measured mic level
 };
 #pragma pack(pop)
 static HANDLE hCtrlMap = nullptr;
@@ -555,6 +555,8 @@ static void RefreshModel() {
 static bool RefreshControls() {
     std::wstring before;
     for (auto& p : g_items) { before += p.text; before += p.enabled ? L'1' : L'0'; before += p.active ? L'1' : L'0'; }
+    static UINT8 lastMic = 0;
+    if (EnsureControl() && ctrl->micLevel != lastMic) { lastMic = ctrl->micLevel; before += L"~"; }
     RefreshModel();
     std::wstring after;
     for (auto& p : g_items) { after += p.text; after += p.enabled ? L'1' : L'0'; after += p.active ? L'1' : L'0'; }
@@ -634,6 +636,21 @@ static void DrawOverlay(Gdiplus::Graphics& g, HWND h, const RECT& client) {
         g.DrawString(fl->text, -1, &fIcon, fr, &sf, fb);
         fl->r = { (LONG)fx, (LONG)fy, (LONG)(fx + fd), (LONG)(fy + fd) };
         y -= 16 * dp;
+    }
+    // mic level bar (170x4dp): what the tablet's mic is sending, live
+    {
+        const float bw = 170 * dp, bh = 4 * dp; y -= bh;
+        RectF tr(cx - bw / 2, y, bw, bh);
+        GraphicsPath tp; RoundPath(tp, tr, bh / 2);
+        SolidBrush track(Color(0x33, 255, 255, 255)); g.FillPath(&track, &tp);
+        const int lvl = TabletConnected() && g_live ? ctrl->micLevel : 0;
+        if (lvl > 0) {
+            RectF fr(cx - bw / 2, y, bw * lvl / 100.f, bh);
+            if (fr.Width < bh) fr.Width = bh;
+            GraphicsPath fp; RoundPath(fp, fr, bh / 2);
+            SolidBrush fill(Color(0xF2, 255, 255, 255)); g.FillPath(&fill, &fp);
+        }
+        y -= 14 * dp;
     }
     // row 3: zoom (-) label (+)
     {
