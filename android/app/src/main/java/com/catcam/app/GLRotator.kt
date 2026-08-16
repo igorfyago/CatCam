@@ -203,6 +203,9 @@ class GLRotator(
     // Transform state
     @Volatile private var rotateDeg = 0
     @Volatile private var mirror = false
+    // The user's mirror toggle, XORed with the geometry's own mirror so a
+    // re-classification (which resets `mirror`) never eats the user's choice.
+    @Volatile var userMirror = false
     @Volatile private var inWidth = outWidth
     @Volatile private var inHeight = outHeight
     // Whether content arrives PRE-ROTATED by the stMatrix at rotate 0 (the
@@ -686,7 +689,7 @@ class GLRotator(
         // the already-rotated frame (wrong axis) — measured on-device:
         // 90+mirror-after == 270 (hair still left). Mirror first, then rotate.
         Matrix.translateM(m, 0, 0.5f, 0.5f, 0f)
-        if (mirror) Matrix.scaleM(m, 0, -1f, 1f, 1f)
+        if (mirror != userMirror) Matrix.scaleM(m, 0, -1f, 1f, 1f)
         Matrix.rotateM(m, 0, rotateDeg.toFloat(), 0f, 0f, 1f)
 
         // Effective input aspect after orientation. m operates in CONTENT

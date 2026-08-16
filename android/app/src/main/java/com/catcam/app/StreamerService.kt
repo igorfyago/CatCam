@@ -62,14 +62,17 @@ import kotlin.concurrent.thread
  *               can register the virtual camera before any frame exists and
  *               knows whether it is allowed to drive the camera.
  *   The hello may carry the live tuning after the flags (older PCs ignore
- *   the extra bytes): [zoom*100:2][ev:1][tone:1][flags2:1] with flags2
- *   bit0 day mode, bit1 focus locked, bit2 focus lock supported (AF camera),
- *   bit3 exposure compensation supported.
+ *   the extra bytes): [zoom*100:2][ev:1][tone:1][flags2:1][wb:1][focus:1]
+ *   [focusPos:1]. flags2: bit0 day, bit1 focus locked, bit2 autofocus camera
+ *   (lock possible), bit3 EV supported, bit4 torch on, bit5 torch available,
+ *   bit6 mirror on, bit7 manual focus possible. wb = CONTROL_AWB_MODE value,
+ *   focus = 0 auto / 1 locked / 2 manual, focusPos = 0..100 (near..far).
  *   PC -> tablet (same framing, the only packets that flow this way):
  *   type 0x10 = command, ASCII payload: "start" | "stop" | "flip" |
  *   "zoom+" | "zoom-" | "ev+" | "ev-" | "tone+" | "tone-" | "day" | "night" |
- *   "focus lock" | "focus auto". Each is exactly what the matching on-screen
- *   control does, through the same setter, so the app UI never disagrees.
+ *   "focus auto" | "focus lock" | "focus near" | "focus far" | "wb next" |
+ *   "torch" | "mirror". Each is exactly what the matching on-screen control
+ *   does, through the same setter, so the app UI never disagrees.
  *
  * READY is the base state: service up (from boot, from the app opening, or
  * re-armed by START_STICKY after a kill), connected to the PC, camera and mic
@@ -187,11 +190,30 @@ class StreamerService : Service() {
         @Volatile var evSteps = 0
             private set
         @Volatile var evRange: Range<Int> = Range(0, 0)   // from the open camera
-        // Focus lock: AF_MODE_AUTO + one trigger, held until unlocked (back
-        // camera; the front is fixed focus on most tablets, then unsupported).
-        @Volatile var focusLocked = false
+        // Focus. 0 auto (continuous video), 1 locked (AF_MODE_AUTO + one
+        // trigger, held), 2 manual (AF_MODE_OFF + LENS_FOCUS_DISTANCE in
+        // diopters: 0 = infinity, focusMin = closest). Cameras without
+        // autofocus (most tablet front cameras) report unsupported.
+        @Volatile var focusMode = 0
             private set
-        @Volatile var focusSupported = false
+        @Volatile var focusDiopters = 0f
+            private set
+        @Volatile var focusMin = 0f          // LENS_INFO_MINIMUM_FOCUS_DISTANCE
+        @Volatile var focusSupported = false // AUTO listed and focusMin > 0
+        @Volatile var manualFocusSupported = false // OFF listed too
+        // White balance: CONTROL_AWB_MODE value, cycled through the presets
+        // this camera lists (auto, incandescent, fluorescent, daylight, cloudy).
+        @Volatile var wbMode = 1              // CONTROL_AWB_MODE_AUTO
+            private set
+        @Volatile var wbModes: List<Int> = listOf(1)
+        // Torch (back camera flash as a light) and horizontal mirror.
+        @Volatile var torchOn = false
+            private set
+        @Volatile var torchSupported = false
+        @Volatile var mirrorOn = false
+            private set
+        private const val KEY_MIRROR_FRONT = "mirror_front"
+        private const val KEY_MIRROR_BACK = "mirror_back"
 
         fun setEv(ctx: Context, steps: Int) {
             evSteps = steps.coerceIn(-12, 12)
@@ -200,9 +222,35 @@ class StreamerService : Service() {
             instance?.pushCaptureTuning()
         }
 
-        fun setFocusLock(on: Boolean) {
-            focusLocked = on && focusSupported
-            instance?.pushCaptureTuning(afTrigger = focusLocked)
+        fun setFocusAuto() { focusMode = 0; instance?.pushCaptureTuning() }
+        fun setFocusLock() {
+            if (!focusSupported) return
+            focusMode = 1
+            instance?.pushCaptureTuning(afTrigger = true)
+        }
+        // Manual: nearer = more diopters. Ten steps across the camera's range;
+        // entering manual from auto starts mid-range.
+        fun focusStep(nearer: Boolean) {
+            if (!manualFocusSupported || focusMin <= 0f) return
+            val step = focusMin / 10f
+            if (focusMode != 2) { focusMode = 2; focusDiopters = focusMin / 2f }
+            focusDiopters = (focusDiopters + (if (nearer) step else -step)).coerceIn(0f, focusMin)
+            instance?.pushCaptureTuning()
+        }
+        fun wbNext() {
+            val i = wbModes.indexOf(wbMode)
+            wbMode = wbModes[(if (i < 0) 0 else i + 1) % wbModes.size]
+            instance?.pushCaptureTuning()
+        }
+        fun setTorch(on: Boolean) {
+            torchOn = on && torchSupported
+            instance?.pushCaptureTuning()
+        }
+        fun setMirror(ctx: Context, on: Boolean) {
+            mirrorOn = on
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(if (preferFrontCamera) KEY_MIRROR_FRONT else KEY_MIRROR_BACK, on).apply()
+            instance?.glRotator?.userMirror = on
         }
 
         // Mic level 0..1 (RMS with a sqrt curve so speech sits mid-bar),
@@ -243,6 +291,7 @@ class StreamerService : Service() {
                 .coerceIn(1f, zoomMax)
             toneStep = sp.getInt(if (preferFrontCamera) KEY_TONE_FRONT else KEY_TONE_BACK, 0)
             evSteps = sp.getInt(if (preferFrontCamera) KEY_EV_FRONT else KEY_EV_BACK, 0)
+            mirrorOn = sp.getBoolean(if (preferFrontCamera) KEY_MIRROR_FRONT else KEY_MIRROR_BACK, false)
             dayMode = sp.getBoolean(KEY_DAY_MODE, false)
             transportWifi = sp.getBoolean(KEY_TRANSPORT_WIFI, false)
             transportGen = sp.getInt(KEY_TRANSPORT_GEN, 0)
@@ -528,10 +577,15 @@ class StreamerService : Service() {
             "tone-" -> setTone(this, toneStep - 1)
             "day" -> setDayMode(this, true)
             "night" -> setDayMode(this, false)
-            "focus lock" -> setFocusLock(true)
-            "focus auto" -> setFocusLock(false)
+            "focus auto" -> setFocusAuto()
+            "focus lock" -> setFocusLock()
+            "focus near" -> focusStep(nearer = true)
+            "focus far" -> focusStep(nearer = false)
+            "wb next" -> wbNext()
+            "torch" -> setTorch(!torchOn)
+            "mirror" -> setMirror(this, !mirrorOn)
         }
-        sendHello()   // the PC menu shows the live values
+        sendHello()   // the PC controls show the live values
     }
 
     // Reads the PC's commands. EOF here is the fastest disconnect signal we
@@ -571,11 +625,16 @@ class StreamerService : Service() {
         // bit0: the PC may drive the camera (not while the user holds it on)
         // bit1: camera live
         val flags = (if (manualHold) 0 else 1) or (if (camOn.get()) 2 else 0)
-        val flags2 = (if (dayMode) 1 else 0) or (if (focusLocked) 2 else 0) or
-            (if (focusSupported) 4 else 0) or (if (evRange.upper > evRange.lower) 8 else 0)
-        return java.nio.ByteBuffer.allocate(14).putInt(w).putInt(h).put(flags.toByte())
+        val flags2 = (if (dayMode) 1 else 0) or (if (focusMode == 1) 2 else 0) or
+            (if (focusSupported) 4 else 0) or (if (evRange.upper > evRange.lower) 8 else 0) or
+            (if (torchOn) 16 else 0) or (if (torchSupported) 32 else 0) or
+            (if (mirrorOn) 64 else 0) or (if (manualFocusSupported) 128 else 0)
+        // focusPos: 0 = nearest, 100 = infinity (what a "near..far" slider shows)
+        val focusPos = if (focusMin > 0f) (100f - focusDiopters / focusMin * 100f).toInt().coerceIn(0, 100) else 100
+        return java.nio.ByteBuffer.allocate(17).putInt(w).putInt(h).put(flags.toByte())
             .putShort((zoomRatio * 100f).toInt().coerceIn(0, 32767).toShort())
-            .put(evSteps.coerceIn(-127, 127).toByte()).put(toneStep.toByte()).put(flags2.toByte()).array()
+            .put(evSteps.coerceIn(-127, 127).toByte()).put(toneStep.toByte()).put(flags2.toByte())
+            .put(wbMode.toByte()).put(focusMode.toByte()).put(focusPos.toByte()).array()
     }
 
     // State changed: tell the PC now rather than at the next 5s heartbeat.
@@ -628,12 +687,27 @@ class StreamerService : Service() {
         val ev = evSteps.coerceIn(evRange.lower, evRange.upper)
         if (evRange.upper > evRange.lower) req.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
         // Focus: continuous video by default; AUTO while locked (the trigger
-        // that actually locks is one-shot, see pushCaptureTuning).
+        // that actually locks is one-shot, see pushCaptureTuning); OFF with an
+        // explicit lens distance in manual.
         if (focusSupported) {
-            req.set(CaptureRequest.CONTROL_AF_MODE, if (focusLocked)
-                CaptureRequest.CONTROL_AF_MODE_AUTO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            when (focusMode) {
+                1 -> req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                2 -> if (manualFocusSupported) {
+                    req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                    req.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDiopters.coerceIn(0f, focusMin))
+                }
+                else -> req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            }
         }
-        Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep ev=$ev focusLock=$focusLocked")
+        // White balance preset (auto = the HAL's own).
+        req.set(CaptureRequest.CONTROL_AWB_MODE, wbMode)
+        // Torch: the flash LED as a light, back camera only.
+        if (torchSupported) {
+            req.set(CaptureRequest.FLASH_MODE, if (torchOn)
+                CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+        }
+        Log.i(TAG, "tuning: day=$dayMode zoom=${"%.2f".format(java.util.Locale.US, z)} tone=$toneStep ev=$ev " +
+            "focus=$focusMode/${"%.2f".format(java.util.Locale.US, focusDiopters)} wb=$wbMode torch=$torchOn mirror=$mirrorOn")
     }
 
     private fun pushCaptureTuning(afTrigger: Boolean = false) {
@@ -899,9 +973,16 @@ class StreamerService : Service() {
         availAeRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
         evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
         val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: IntArray(0)
-        val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        focusSupported = minFocus > 0f && afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO)
-        if (!focusSupported) focusLocked = false
+        focusMin = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        focusSupported = focusMin > 0f && afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO)
+        manualFocusSupported = focusMin > 0f && afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_OFF)
+        if (!focusSupported) { focusMode = 0 }
+        val awb = chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf(1)
+        // Preset order people expect: auto, incandescent, fluorescent, daylight, cloudy.
+        wbModes = listOf(1, 2, 3, 5, 6).filter { awb.contains(it) }.ifEmpty { listOf(1) }
+        if (!wbModes.contains(wbMode)) wbMode = wbModes[0]
+        torchSupported = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        if (!torchSupported) torchOn = false
         chosenChars = chars
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -1077,6 +1158,7 @@ class StreamerService : Service() {
                 val rot = GLRotator(codecInput, encWidth, encHeight)
                 rot.setInputBufferSize(capW, capH)
                 rot.setTransform(rotateDeg, mirror = mirrorFrame)
+                rot.userMirror = mirrorOn
                 // Orientation is classified from the live stMatrix on the
                 // first frame (PREROT keeps the measured SM-T220 geometry;
                 // STANDARD derives the textbook rotation).

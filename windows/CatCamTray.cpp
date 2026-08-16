@@ -27,11 +27,13 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <windowsx.h>
 #include <tlhelp32.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <stdio.h>
 #include <vector>
+#include <string>
 
 #define WM_TRAYICON      (WM_USER + 1)
 #define WM_SHOWICON      (WM_APP + 2)   // posted by a second instance
@@ -57,6 +59,18 @@
 #define ID_CAM_NIGHT     1108
 #define ID_CAM_FOCUSLOCK 1109
 #define ID_CAM_FOCUSAUTO 1110
+#define ID_CAM_FOCUSNEAR 1111
+#define ID_CAM_FOCUSFAR  1112
+#define ID_CAM_WB        1113
+#define ID_CAM_TORCH     1114
+#define ID_CAM_MIRROR    1115
+#define ID_CAM_FLIP      1116
+#define ID_CAM_POWER     1117
+#define ID_CAM_LBL_ZOOM  1120
+#define ID_CAM_LBL_EV    1121
+#define ID_CAM_LBL_TONE  1122
+#define ID_CAM_LBL_FOCUS 1123
+#define ID_CAM_LBL_STATE 1124
 #define IDT_TICK         42
 #define IDT_PREVIEW      43
 
@@ -101,11 +115,16 @@ struct ControlBlock {
     UINT32 tabletState;      // 0 none, 1 READY (camera off), 2 live
     UINT32 tabletOnDemand;
     UINT64 hostBeat;
-    UINT32 cmdSeq;           // tray -> host mailbox (see host)
-    char   cmd[15];
-    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 focus supported, bit3 EV supported
+    UINT32 cmdSeq;           // tray -> host mailbox
+    char   cmd[11];          // longest verb "focus auto"/"focus near" + NUL
+    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 AF camera, bit3 EV ok,
+                             // bit4 torch on, bit5 torch ok, bit6 mirror on, bit7 manual focus ok
     INT16  zoomX100;
     INT8   ev, tone;
+    UINT8  wb;               // CONTROL_AWB_MODE value (1 auto, 2 incandescent, 3 fluorescent, 5 daylight, 6 cloudy)
+    UINT8  focusMode;        // 0 auto, 1 locked, 2 manual
+    UINT8  focusPos;         // 0 near .. 100 far
+    UINT8  spare;
 };
 #pragma pack(pop)
 static HANDLE hCtrlMap = nullptr;
@@ -128,9 +147,9 @@ static void Log(const char* fmt, ...);   // defined below
 // 0x10 command packet understands.
 static void SendTablet(const char* verb) {
     if (!EnsureControl()) return;
-    char buf[15] = {};
+    char buf[11] = {};
     strncpy_s(buf, verb, _TRUNCATE);
-    memcpy((void*)ctrl->cmd, buf, 15);
+    memcpy((void*)ctrl->cmd, buf, 11);
     InterlockedIncrement((volatile LONG*)&ctrl->cmdSeq);
     Log("camera: %s", verb);
 }
@@ -437,13 +456,341 @@ static void Nv12ToRgb32(const BYTE* src, BYTE* dst, UINT32 w, UINT32 h) {
     }
 }
 
+// ---------------------------------------------------------------- overlay
+// The preview IS the app: full-bleed video with the same overlay the tablet
+// draws (Instagram/Snap camera idiom, tokens copied from res/drawable and
+// activity_main.xml): status pill top centre; bottom stack of scrim pills
+// (35% black, fully rounded; active segment = white pill, black text;
+// inactive text 70% white), zoom in 44dp scrim circles, then the shutter
+// row (76dp ring, 3dp white stroke, white circle off / red rounded square
+// live) with the flip circle to its left. Extra rows the PC needs beyond
+// the app (exposure, white balance, focus, torch, mirror) use the same
+// pill vocabulary. Everything is drawn into one back buffer per frame and
+// blitted once: no child windows, no flicker. Values shown are what the
+// tablet reports back.
+// Keys: +/- zoom, Up/Down exposure, Left/Right tone, F flip, Space shutter,
+// A/L/N/M focus auto/lock/near/far, W white balance, D day/night, T torch,
+// R mirror, Esc close.
+enum class Kind { Seg, Circle, Shutter, Status, Label };
+struct Item {
+    int id; Kind kind; const wchar_t* def;   // default text
+    wchar_t text[48]; bool enabled = true, active = false; RECT r{}; int row;
+};
+// Rows, top to bottom of the bottom stack; row 100 = status pill (top).
+static Item g_items[] = {
+    { ID_CAM_LBL_STATE, Kind::Status, L"no tablet",  L"", true, false, {}, 100 },
+    { ID_CAM_COOLER,    Kind::Seg,    L"Cool",       L"", true, false, {}, 0 },
+    { ID_CAM_LBL_TONE,  Kind::Label,  L"0",          L"", true, false, {}, 0 },
+    { ID_CAM_WARMER,    Kind::Seg,    L"Warm",       L"", true, false, {}, 0 },
+    { -1,               Kind::Label,  L"|",          L"", true, false, {}, 0 },   // group break
+    { ID_CAM_DAY,       Kind::Seg,    L"Day",        L"", true, false, {}, 0 },
+    { ID_CAM_NIGHT,     Kind::Seg,    L"Night",      L"", true, false, {}, 0 },
+    { ID_CAM_EVDOWN,    Kind::Seg,    L"Darker",     L"", true, false, {}, 1 },
+    { ID_CAM_LBL_EV,    Kind::Label,  L"0",          L"", true, false, {}, 1 },
+    { ID_CAM_EVUP,      Kind::Seg,    L"Brighter",   L"", true, false, {}, 1 },
+    { -1,               Kind::Label,  L"|",          L"", true, false, {}, 1 },
+    { ID_CAM_WB,        Kind::Seg,    L"WB auto",    L"", true, false, {}, 1 },
+    { ID_CAM_FOCUSAUTO, Kind::Seg,    L"Focus auto", L"", true, false, {}, 2 },
+    { ID_CAM_FOCUSLOCK, Kind::Seg,    L"Lock",       L"", true, false, {}, 2 },
+    { ID_CAM_FOCUSNEAR, Kind::Seg,    L"Nearer",     L"", true, false, {}, 2 },
+    { ID_CAM_FOCUSFAR,  Kind::Seg,    L"Farther",    L"", true, false, {}, 2 },
+    { -1,               Kind::Label,  L"|",          L"", true, false, {}, 2 },
+    { ID_CAM_TORCH,     Kind::Seg,    L"Torch",      L"", true, false, {}, 2 },
+    { -1,               Kind::Label,  L"|",          L"", true, false, {}, 2 },
+    { ID_CAM_MIRROR,    Kind::Seg,    L"Mirror",     L"", true, false, {}, 2 },
+    { ID_CAM_ZOOMOUT,   Kind::Circle, L"\u2212",     L"", true, false, {}, 3 },
+    { ID_CAM_LBL_ZOOM,  Kind::Label,  L"1.0\u00d7",  L"", true, false, {}, 3 },
+    { ID_CAM_ZOOMIN,    Kind::Circle, L"+",          L"", true, false, {}, 3 },
+    { ID_CAM_FLIP,      Kind::Circle, L"\uE895",     L"", true, false, {}, 4 },   // Segoe MDL2 "Sync"
+    { ID_CAM_POWER,     Kind::Shutter,L"",           L"", true, false, {}, 4 },
+};
+static int g_hot = -1, g_press = -1;
+static bool g_trackingMouse = false;
+static HDC g_backDc = nullptr; static HBITMAP g_backBmp = nullptr; static int g_backW = 0, g_backH = 0;
+static COLORREF g_statusColor = 0x66000000;   // ARGB-ish: alpha in top byte for our own use
+static bool g_live = false;
+
+static Item* ItemById(int id) { for (auto& p : g_items) if (p.id == id) return &p; return nullptr; }
+static void IText(int id, const wchar_t* t) { if (Item* p = ItemById(id)) wcscpy_s(p->text, t); }
+static void IOn(int id, bool on) { if (Item* p = ItemById(id)) p->enabled = on; }
+static void IActive(int id, bool a) { if (Item* p = ItemById(id)) p->active = a; }
+
+static void RefreshModel() {
+    for (auto& p : g_items) { wcscpy_s(p.text, p.def); p.enabled = true; p.active = false; }
+    const bool on = TabletConnected();
+    g_live = on && ctrl->tabletState == 2;
+    if (!on) {
+        IText(ID_CAM_LBL_STATE, L"no tablet"); g_statusColor = 0x66000000;
+        for (auto& p : g_items) if (p.kind != Kind::Shutter && p.id != ID_CAM_FLIP) p.enabled = false;
+        return;
+    }
+    const UINT8 f = ctrl->tuneFlags;
+    wchar_t t[48];
+    if (g_live) { IText(ID_CAM_LBL_STATE, L"LIVE"); g_statusColor = 0xFFE53935; }
+    else { IText(ID_CAM_LBL_STATE, L"READY \u00b7 camera off"); g_statusColor = 0xFFDD9C10; }
+    swprintf_s(t, L"%d.%d\u00d7", ctrl->zoomX100 / 100, (ctrl->zoomX100 % 100) / 10); IText(ID_CAM_LBL_ZOOM, t);
+    swprintf_s(t, L"%+d", (int)ctrl->ev); IText(ID_CAM_LBL_EV, t);
+    swprintf_s(t, L"%+d", (int)ctrl->tone); IText(ID_CAM_LBL_TONE, t);
+    if (ctrl->tone == 0) IText(ID_CAM_LBL_TONE, L"0");
+    if (ctrl->ev == 0) IText(ID_CAM_LBL_EV, L"0");
+    IActive(ID_CAM_DAY, f & 1); IActive(ID_CAM_NIGHT, !(f & 1));
+    IText(ID_CAM_WB, ctrl->wb == 2 ? L"WB incandescent" : ctrl->wb == 3 ? L"WB fluorescent"
+        : ctrl->wb == 5 ? L"WB daylight" : ctrl->wb == 6 ? L"WB cloudy" : L"WB auto");
+    IActive(ID_CAM_WB, ctrl->wb != 1);
+    const bool af = f & 4, manual = f & 128;
+    IActive(ID_CAM_FOCUSAUTO, af && ctrl->focusMode == 0);
+    IActive(ID_CAM_FOCUSLOCK, af && ctrl->focusMode == 1);
+    if (ctrl->focusMode == 2) { swprintf_s(t, L"Manual %u%%", (unsigned)ctrl->focusPos); IText(ID_CAM_FOCUSNEAR, L"Nearer"); }
+    if (!af) IText(ID_CAM_FOCUSAUTO, L"Fixed focus");
+    IOn(ID_CAM_FOCUSAUTO, af); IOn(ID_CAM_FOCUSLOCK, af);
+    IOn(ID_CAM_FOCUSNEAR, manual); IOn(ID_CAM_FOCUSFAR, manual);
+    IActive(ID_CAM_TORCH, f & 16); IOn(ID_CAM_TORCH, f & 32);
+    IActive(ID_CAM_MIRROR, f & 64);
+    IOn(ID_CAM_EVUP, f & 8); IOn(ID_CAM_EVDOWN, f & 8);
+    if (!g_live)  // tuning only means something while the camera runs
+        for (auto& p : g_items) if (p.kind == Kind::Seg || p.kind == Kind::Circle) if (p.id != ID_CAM_FLIP) p.enabled = false;
+}
+
+// Snapshot-diff so READY (no frames) still repaints on state changes.
+static bool RefreshControls() {
+    std::wstring before;
+    for (auto& p : g_items) { before += p.text; before += p.enabled ? L'1' : L'0'; before += p.active ? L'1' : L'0'; }
+    RefreshModel();
+    std::wstring after;
+    for (auto& p : g_items) { after += p.text; after += p.enabled ? L'1' : L'0'; after += p.active ? L'1' : L'0'; }
+    return before != after;
+}
+
+static void RoundPath(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rf, float rad) {
+    using namespace Gdiplus;
+    if (rad * 2 > rf.Height) rad = rf.Height / 2;
+    if (rad * 2 > rf.Width) rad = rf.Width / 2;
+    path.AddArc(rf.X, rf.Y, rad * 2, rad * 2, 180, 90);
+    path.AddArc(rf.X + rf.Width - rad * 2, rf.Y, rad * 2, rad * 2, 270, 90);
+    path.AddArc(rf.X + rf.Width - rad * 2, rf.Y + rf.Height - rad * 2, rad * 2, rad * 2, 0, 90);
+    path.AddArc(rf.X, rf.Y + rf.Height - rad * 2, rad * 2, rad * 2, 90, 90);
+    path.CloseFigure();
+}
+
+// Layout + draw in one pass (text widths come from the same Graphics).
+// dp: the app's dp, scaled so 1dp = 1px at 96 DPI.
+static void DrawOverlay(Gdiplus::Graphics& g, HWND h, const RECT& client) {
+    using namespace Gdiplus;
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    const float dp = GetDpiForWindow(h) / 96.f;
+    Font f13(L"Segoe UI Semibold", 13 * dp * 96.f / 72.f, FontStyleRegular, UnitPixel);
+    Font f14(L"Segoe UI", 14 * dp * 96.f / 72.f, FontStyleRegular, UnitPixel);
+    Font f20(L"Segoe UI", 20 * dp * 96.f / 72.f, FontStyleRegular, UnitPixel);
+    Font fIcon(L"Segoe MDL2 Assets", 20 * dp * 96.f / 72.f, FontStyleRegular, UnitPixel);
+    StringFormat sf; sf.SetAlignment(StringAlignmentCenter); sf.SetLineAlignment(StringAlignmentCenter);
+    sf.SetFormatFlags(StringFormatFlagsNoWrap);
+    const Color scrim(0x59, 0, 0, 0), white(255, 255, 255, 255), white70(0xB3, 255, 255, 255), black(255, 0, 0, 0);
+    SolidBrush bScrim(scrim), bWhite(white), bWhite70(white70), bBlack(black);
+    const float cx = (client.left + client.right) / 2.f;
+
+    // ---- status pill (top centre, 44dp down): solid pill in the state colour
+    {
+        Item* st = ItemById(ID_CAM_LBL_STATE);
+        RectF m; g.MeasureString(st->text, -1, &f13, PointF(0, 0), &sf, &m);
+        const float w = m.Width + 32 * dp, hh = m.Height + 14 * dp;
+        RectF rf(cx - w / 2, client.top + 44 * dp, w, hh);
+        GraphicsPath p; RoundPath(p, rf, hh / 2);
+        SolidBrush b(Color((g_statusColor >> 24) & 0xFF, (g_statusColor >> 16) & 0xFF, (g_statusColor >> 8) & 0xFF, g_statusColor & 0xFF));
+        g.FillPath(&b, &p);
+        g.DrawString(st->text, -1, &f13, rf, &sf, &bWhite);
+        st->r = { (LONG)rf.X, (LONG)rf.Y, (LONG)(rf.X + rf.Width), (LONG)(rf.Y + rf.Height) };
+    }
+
+    // ---- bottom stack: rows 0..2 pill groups, row 3 zoom, row 4 shutter.
+    // Measure each row's width first, then place centred; rows stack upward
+    // from 26dp above the bottom.
+    const float segPadX = 14 * dp, segPadY = 6 * dp, groupPad = 4 * dp, gap = 12 * dp;
+    const float rowGap = 14 * dp;
+    float y = client.bottom - 26 * dp;
+    // row 4: shutter row (80dp tall): shutter 76 centred, flip 52 at 64dp from the stack's left edge
+    {
+        const float rowH = 80 * dp; y -= rowH;
+        Item* sh = ItemById(ID_CAM_POWER); Item* fl = ItemById(ID_CAM_FLIP);
+        const float sd = 76 * dp, sx = cx - sd / 2, sy = y + (rowH - sd) / 2;
+        // ring: 3dp white stroke over 15% black
+        SolidBrush ringFill(Color(0x26, 0, 0, 0)); Pen ringPen(white, 3 * dp);
+        g.FillEllipse(&ringFill, sx, sy, sd, sd);
+        g.DrawEllipse(&ringPen, sx + 1.5f * dp, sy + 1.5f * dp, sd - 3 * dp, sd - 3 * dp);
+        if (g_live) { // red rounded square 30dp
+            const float d = 30 * dp; RectF rf(cx - d / 2, sy + sd / 2 - d / 2, d, d);
+            GraphicsPath p; RoundPath(p, rf, 10 * dp);
+            SolidBrush red(Color(255, 0xFF, 0x3B, 0x30)); g.FillPath(&red, &p);
+        } else {      // white circle 60dp
+            const float d = 60 * dp; g.FillEllipse(&bWhite, cx - d / 2, sy + sd / 2 - d / 2, d, d);
+        }
+        sh->r = { (LONG)sx, (LONG)sy, (LONG)(sx + sd), (LONG)(sy + sd) };
+        // flip circle: 52dp, at 64dp from the left of the client (the app's
+        // FrameLayout is full width), vertically centred on the shutter
+        const float fd = 52 * dp, fx = cx - 110 * dp - fd / 2, fy = sy + sd / 2 - fd / 2;
+        g.FillEllipse(&bScrim, fx, fy, fd, fd);
+        RectF fr(fx, fy, fd, fd);
+        SolidBrush* fb = fl->enabled ? &bWhite : &bWhite70;
+        g.DrawString(fl->text, -1, &fIcon, fr, &sf, fb);
+        fl->r = { (LONG)fx, (LONG)fy, (LONG)(fx + fd), (LONG)(fy + fd) };
+        y -= 16 * dp;
+    }
+    // row 3: zoom (-) label (+)
+    {
+        Item* zo = ItemById(ID_CAM_ZOOMOUT); Item* zl = ItemById(ID_CAM_LBL_ZOOM); Item* zi = ItemById(ID_CAM_ZOOMIN);
+        const float cd = 44 * dp; y -= cd;
+        RectF m; g.MeasureString(zl->text, -1, &f14, PointF(0, 0), &sf, &m);
+        const float lw = m.Width + 32 * dp, lh = 34 * dp, total = cd + 8 * dp + lw + 8 * dp + cd;
+        float x = cx - total / 2;
+        auto circle = [&](Item* it, float x0) {
+            const bool hot = it == &g_items[g_hot >= 0 ? g_hot : 0] && g_hot >= 0, pr = g_press >= 0 && it == &g_items[g_press];
+            SolidBrush b(Color(pr ? 0x90 : hot ? 0x70 : 0x59, 0, 0, 0));
+            g.FillEllipse(&b, x0, y, cd, cd);
+            RectF r(x0, y, cd, cd);
+            g.DrawString(it->text, -1, &f20, r, &sf, it->enabled ? &bWhite : &bWhite70);
+            it->r = { (LONG)x0, (LONG)y, (LONG)(x0 + cd), (LONG)(y + cd) };
+        };
+        circle(zo, x); x += cd + 8 * dp;
+        RectF lr(x, y + (cd - lh) / 2, lw, lh); GraphicsPath p; RoundPath(p, lr, lh / 2);
+        g.FillPath(&bScrim, &p); g.DrawString(zl->text, -1, &f14, lr, &sf, &bWhite);
+        x += lw + 8 * dp;
+        circle(zi, x);
+        y -= rowGap;
+    }
+    // rows 2,1,0: pill groups (segments on a scrim pill; "|" = group break)
+    for (int row = 2; row >= 0; row--) {
+        // measure
+        struct Seg { Item* it; float w; };
+        std::vector<std::vector<Seg>> groups(1);
+        float rowH = 0;
+        for (auto& it : g_items) {
+            if (it.row != row) continue;
+            if (it.id == -1) { groups.emplace_back(); continue; }
+            RectF m; g.MeasureString(it.text, -1, &f13, PointF(0, 0), &sf, &m);
+            const float w = m.Width + (it.kind == Kind::Label ? 16 * dp : 2 * segPadX);
+            if (m.Height + 2 * segPadY > rowH) rowH = m.Height + 2 * segPadY;
+            groups.back().push_back({ &it, w });
+        }
+        float total = 0;
+        for (auto& gr : groups) { float gw = 2 * groupPad; for (auto& s : gr) gw += s.w; total += gw; }
+        total += gap * (groups.size() - 1);
+        const float gh = rowH + 2 * groupPad;
+        y -= gh;
+        float x = cx - total / 2;
+        for (auto& gr : groups) {
+            float gw = 2 * groupPad; for (auto& s : gr) gw += s.w;
+            RectF grf(x, y, gw, gh); GraphicsPath gp; RoundPath(gp, grf, gh / 2);
+            g.FillPath(&bScrim, &gp);
+            float sx = x + groupPad;
+            for (auto& s : gr) {
+                RectF rf(sx, y + groupPad, s.w, rowH);
+                Item* it = s.it;
+                it->r = { (LONG)rf.X, (LONG)rf.Y, (LONG)(rf.X + rf.Width), (LONG)(rf.Y + rf.Height) };
+                const int idx = (int)(it - g_items);
+                const bool hot = idx == g_hot, pr = idx == g_press;
+                if (it->kind == Kind::Seg) {
+                    if (it->active) {
+                        GraphicsPath sp; RoundPath(sp, rf, rf.Height / 2);
+                        SolidBrush b(Color(it->enabled ? 255 : 110, 255, 255, 255)); g.FillPath(&b, &sp);
+                        SolidBrush tb(Color(it->enabled ? 255 : 160, 0, 0, 0));
+                        g.DrawString(it->text, -1, &f13, rf, &sf, &tb);
+                    } else {
+                        if (hot || pr) { GraphicsPath sp; RoundPath(sp, rf, rf.Height / 2); SolidBrush b(Color(pr ? 0x40 : 0x22, 255, 255, 255)); g.FillPath(&b, &sp); }
+                        SolidBrush tb(Color(it->enabled ? 0xB3 : 0x50, 255, 255, 255));
+                        g.DrawString(it->text, -1, &f13, rf, &sf, &tb);
+                    }
+                } else { // value label
+                    g.DrawString(it->text, -1, &f13, rf, &sf, &bWhite);
+                }
+                sx += s.w;
+            }
+            x += gw + gap;
+        }
+        y -= rowGap;
+    }
+}
+
+static int ItemAt(POINT pt) {
+    int i = 0;
+    for (auto& p : g_items) { if (p.id > 0 && p.kind != Kind::Label && p.kind != Kind::Status && PtInRect(&p.r, pt)) return i; i++; }
+    return -1;
+}
+
+static void EnsureBackBuffer(HDC dc, int w, int h) {
+    if (g_backDc && g_backW == w && g_backH == h) return;
+    if (g_backBmp) DeleteObject(g_backBmp);
+    if (!g_backDc) g_backDc = CreateCompatibleDC(dc);
+    g_backBmp = CreateCompatibleBitmap(dc, w, h);
+    SelectObject(g_backDc, g_backBmp);
+    g_backW = w; g_backH = h;
+}
+
 static LRESULT CALLBACK PreviewWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_ERASEBKGND: return 1; // painted fully in WM_PAINT (no flicker)
+    case WM_CREATE: RefreshControls(); return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT && g_hot >= 0 && g_items[g_hot].enabled) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+        break;
+    case WM_MOUSEMOVE: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const int i = ItemAt(pt);
+        if (i != g_hot) { g_hot = i; InvalidateRect(h, nullptr, FALSE); }
+        if (!g_trackingMouse) { TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, h, 0 }; TrackMouseEvent(&tme); g_trackingMouse = true; }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        g_trackingMouse = false;
+        if (g_hot >= 0) { g_hot = -1; InvalidateRect(h, nullptr, FALSE); }
+        return 0;
+    case WM_LBUTTONDOWN: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        g_press = ItemAt(pt);
+        if (g_press >= 0) { SetCapture(h); InvalidateRect(h, nullptr, FALSE); }
+        SetFocus(h);
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const int i = ItemAt(pt);
+        if (GetCapture() == h) ReleaseCapture();
+        if (i >= 0 && i == g_press && g_items[i].enabled)
+            SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(g_items[i].id, 0), 0);
+        g_press = -1;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    }
+    case WM_KEYDOWN: {
+        int id = 0;
+        switch (wp) {
+        case VK_ADD: case VK_OEM_PLUS: id = ID_CAM_ZOOMIN; break;
+        case VK_SUBTRACT: case VK_OEM_MINUS: id = ID_CAM_ZOOMOUT; break;
+        case VK_UP: id = ID_CAM_EVUP; break;
+        case VK_DOWN: id = ID_CAM_EVDOWN; break;
+        case VK_RIGHT: id = ID_CAM_WARMER; break;
+        case VK_LEFT: id = ID_CAM_COOLER; break;
+        case 'F': id = ID_CAM_FLIP; break;
+        case VK_SPACE: id = ID_CAM_POWER; break;
+        case 'A': id = ID_CAM_FOCUSAUTO; break;
+        case 'L': id = ID_CAM_FOCUSLOCK; break;
+        case 'N': id = ID_CAM_FOCUSNEAR; break;
+        case 'M': id = ID_CAM_FOCUSFAR; break;
+        case 'W': id = ID_CAM_WB; break;
+        case 'D': id = (TabletConnected() && (ctrl->tuneFlags & 1)) ? ID_CAM_NIGHT : ID_CAM_DAY; break;
+        case 'T': id = ID_CAM_TORCH; break;
+        case 'R': id = ID_CAM_MIRROR; break;
+        case VK_ESCAPE: DestroyWindow(h); return 0;
+        }
+        if (id) { if (Item* p = ItemById(id)) if (p->enabled) SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(id, 0), 0); }
+        return 0;
+    }
+    case WM_ERASEBKGND: return 1; // composed fully in WM_PAINT
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(h, &ps);
         RECT rc; GetClientRect(h, &rc);
+        if (rc.right <= 0 || rc.bottom <= 0) { EndPaint(h, &ps); return 0; }
+        EnsureBackBuffer(dc, rc.right, rc.bottom);
+        HDC bdc = g_backDc;
         const int cw = rc.right, ch = rc.bottom;
         HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
         if (!rgbBuf.empty() && prevW && prevH && cw > 0 && ch > 0) {
@@ -451,10 +798,10 @@ static LRESULT CALLBACK PreviewWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             const int dw = (int)(prevW * sc), dh = (int)(prevH * sc);
             const int dx = (cw - dw) / 2, dy = (ch - dh) / 2;
             RECT s;
-            s = { 0, 0, cw, dy };                FillRect(dc, &s, black); // top
-            s = { 0, dy + dh, cw, ch };          FillRect(dc, &s, black); // bottom
-            s = { 0, dy, dx, dy + dh };          FillRect(dc, &s, black); // left
-            s = { dx + dw, dy, cw, dy + dh };    FillRect(dc, &s, black); // right
+            s = { 0, 0, cw, dy };                FillRect(bdc, &s, black);
+            s = { 0, dy + dh, cw, ch };          FillRect(bdc, &s, black);
+            s = { 0, dy, dx, dy + dh };          FillRect(bdc, &s, black);
+            s = { dx + dw, dy, cw, dy + dh };    FillRect(bdc, &s, black);
             BITMAPINFO bi{};
             bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = (LONG)prevW;
@@ -462,19 +809,34 @@ static LRESULT CALLBACK PreviewWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32;
             bi.bmiHeader.biCompression = BI_RGB;
-            SetStretchBltMode(dc, HALFTONE);
-            SetBrushOrgEx(dc, 0, 0, nullptr);
-            StretchDIBits(dc, dx, dy, dw, dh, 0, 0, prevW, prevH,
+            SetStretchBltMode(bdc, HALFTONE);
+            SetBrushOrgEx(bdc, 0, 0, nullptr);
+            StretchDIBits(bdc, dx, dy, dw, dh, 0, 0, prevW, prevH,
                 rgbBuf.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
         } else {
-            FillRect(dc, &rc, black);
+            FillRect(bdc, &rc, black);
         }
+        {
+            Gdiplus::Graphics g(bdc);
+            DrawOverlay(g, h, rc);
+        }
+        BitBlt(dc, 0, 0, rc.right, rc.bottom, bdc, 0, 0, SRCCOPY);
         EndPaint(h, &ps);
         return 0;
     }
     case WM_SIZE: InvalidateRect(h, nullptr, FALSE); return 0;
+    case WM_DPICHANGED: {
+        RECT* r = (RECT*)lp;
+        SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
     case WM_CLOSE: DestroyWindow(h); return 0;
-    case WM_DESTROY: prevWnd = nullptr; return 0;
+    case WM_DESTROY:
+        prevWnd = nullptr; g_hot = g_press = -1;
+        if (g_backBmp) { DeleteObject(g_backBmp); g_backBmp = nullptr; }
+        if (g_backDc) { DeleteDC(g_backDc); g_backDc = nullptr; }
+        g_backW = g_backH = 0;
+        return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
@@ -493,8 +855,10 @@ static void OpenPreview() {
     if (GetMonitorInfoW(mon, &mi)) wa = mi.rcWork;
     else SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
     const LONG half = (wa.right - wa.left) / 2;
-    prevWnd = CreateWindowW(L"CatCamPreviewWnd", L"CatCam preview",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+    prevWnd = CreateWindowW(L"CatCamPreviewWnd", L"CatCam \u00b7 live preview & controls",
+        // WS_CLIPCHILDREN: the video repaints 30x/s; without it the parent's
+        // paint lands on top of the control-bar buttons (measured: empty bar).
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
         wa.left + half, wa.top, wa.right - (wa.left + half), wa.bottom - wa.top,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     // Title-bar/taskbar mascot (built once from the tray art, no dot).
@@ -519,6 +883,7 @@ static void PreviewTick() {
     // The preview is a consumer: an on-demand tablet turns its camera on
     // for it exactly like for Teams.
     if (prevWnd && EnsureControl()) ctrl->previewBeat = GetTickCount64();
+    if (prevWnd && RefreshControls()) InvalidateRect(prevWnd, nullptr, FALSE);
     if (!prevWnd || !EnsureSharedMem()) return;
     const UINT32 w = shm->width, h = shm->height;
     if (!w || !h) return;
@@ -700,43 +1065,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP) {
             POINT p; GetCursorPos(&p);
             HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, ID_TRAY_PREVIEW, L"Live preview");
+            AppendMenuW(menu, MF_STRING, ID_TRAY_PREVIEW, L"Live preview && controls");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            // Camera submenu: live values from the tablet's hello, each item
-            // one wire command. Greyed as a whole until a tablet is connected.
-            {
-                HMENU cam = CreatePopupMenu();
-                const bool on = TabletConnected();
-                const UINT en = on ? MF_STRING : (MF_STRING | MF_GRAYED);
-                wchar_t t[64];
-                const int zx = on ? ctrl->zoomX100 : 100;
-                swprintf_s(t, L"Zoom in\t%d.%02dx", zx / 100, zx % 100);
-                AppendMenuW(cam, en, ID_CAM_ZOOMIN, t);
-                AppendMenuW(cam, en, ID_CAM_ZOOMOUT, L"Zoom out");
-                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
-                const bool evOk = on && (ctrl->tuneFlags & 8);
-                swprintf_s(t, L"Brighter\tEV %+d", on ? (int)ctrl->ev : 0);
-                AppendMenuW(cam, evOk ? MF_STRING : (MF_STRING | MF_GRAYED), ID_CAM_EVUP, t);
-                AppendMenuW(cam, evOk ? MF_STRING : (MF_STRING | MF_GRAYED), ID_CAM_EVDOWN, L"Darker");
-                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
-                swprintf_s(t, L"Warmer\ttone %+d", on ? (int)ctrl->tone : 0);
-                AppendMenuW(cam, en, ID_CAM_WARMER, t);
-                AppendMenuW(cam, en, ID_CAM_COOLER, L"Cooler");
-                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
-                const bool day = on && (ctrl->tuneFlags & 1);
-                AppendMenuW(cam, en | (day ? MF_CHECKED : 0), ID_CAM_DAY, L"Day");
-                AppendMenuW(cam, en | (!day && on ? MF_CHECKED : 0), ID_CAM_NIGHT, L"Night");
-                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
-                const bool afOk = on && (ctrl->tuneFlags & 4);
-                const bool afLocked = on && (ctrl->tuneFlags & 2);
-                AppendMenuW(cam, (afOk ? MF_STRING : (MF_STRING | MF_GRAYED)) | (afLocked ? MF_CHECKED : 0),
-                    ID_CAM_FOCUSLOCK, afOk ? L"Focus: lock here" : L"Focus: lock (fixed-focus camera)");
-                AppendMenuW(cam, (afOk ? MF_STRING : (MF_STRING | MF_GRAYED)) | (afOk && !afLocked ? MF_CHECKED : 0),
-                    ID_CAM_FOCUSAUTO, L"Focus: auto");
-                AppendMenuW(cam, MF_SEPARATOR, 0, nullptr);
-                AppendMenuW(cam, MF_STRING, ID_TRAY_FLIP, L"Flip camera (front/back)");
-                AppendMenuW(menu, MF_POPUP, (UINT_PTR)cam, L"Camera");
-            }
+            AppendMenuW(menu, MF_STRING, ID_TRAY_FLIP, L"Flip camera (front/back)");
             AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTART, L"Turn tablet camera on");
             AppendMenuW(menu, MF_STRING, ID_TRAY_CAMSTOP, L"Turn tablet camera off");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -770,6 +1101,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) == ID_CAM_NIGHT)     SendTablet("night");
         if (LOWORD(wp) == ID_CAM_FOCUSLOCK) SendTablet("focus lock");
         if (LOWORD(wp) == ID_CAM_FOCUSAUTO) SendTablet("focus auto");
+        if (LOWORD(wp) == ID_CAM_FOCUSNEAR) SendTablet("focus near");
+        if (LOWORD(wp) == ID_CAM_FOCUSFAR)  SendTablet("focus far");
+        if (LOWORD(wp) == ID_CAM_WB)        SendTablet("wb next");
+        if (LOWORD(wp) == ID_CAM_TORCH)     SendTablet("torch");
+        if (LOWORD(wp) == ID_CAM_MIRROR)    SendTablet("mirror");
+        if (LOWORD(wp) == ID_CAM_FLIP)      { if (TabletConnected()) SendTablet("flip"); else RunCamCtl(L"flip"); }
+        if (LOWORD(wp) == ID_CAM_POWER) {
+            if (!TabletConnected()) RunCamCtl(L"start");
+            else SendTablet(ctrl->tabletState == 2 ? "stop" : "start");
+        }
         if (LOWORD(wp) == ID_TRAY_WIFI) {
             const bool on = !WifiEnabled();
             SetWifiEnabled(on);

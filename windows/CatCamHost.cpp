@@ -73,12 +73,16 @@ struct ControlBlock {
     // Tray -> host command mailbox: tray writes cmd then bumps cmdSeq; the
     // host forwards it to the tablet over the wire. Same vocabulary as the
     // tablet's 0x10 command packet.
-    UINT32 cmdSeq;
-    char   cmd[15];
-    // Tablet's live tuning, from its hello: for the tray's Camera menu.
-    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 focus supported, bit3 EV supported
+    UINT32 cmdSeq;           // tray -> host mailbox
+    char   cmd[11];          // longest verb "focus auto"/"focus near" + NUL
+    UINT8  tuneFlags;        // bit0 day, bit1 focus locked, bit2 AF camera, bit3 EV ok,
+                             // bit4 torch on, bit5 torch ok, bit6 mirror on, bit7 manual focus ok
     INT16  zoomX100;
     INT8   ev, tone;
+    UINT8  wb;               // CONTROL_AWB_MODE value (1 auto, 2 incandescent, 3 fluorescent, 5 daylight, 6 cloudy)
+    UINT8  focusMode;        // 0 auto, 1 locked, 2 manual
+    UINT8  focusPos;         // 0 near .. 100 far
+    UINT8  spare;
 };
 #pragma pack(pop)
 static const UINT32 CONTROL_MAGIC = 0x4C544343u;
@@ -109,6 +113,9 @@ static void NoteHello(const BYTE* p, UINT32 len) {
         g_ctrl->ev = (INT8)p[11];
         g_ctrl->tone = (INT8)p[12];
         g_ctrl->tuneFlags = p[13];
+    }
+    if (len >= 17) { // [wb:1][focusMode:1][focusPos:1]
+        g_ctrl->wb = p[14]; g_ctrl->focusMode = p[15]; g_ctrl->focusPos = p[16];
     }
 }
 
@@ -152,7 +159,7 @@ static DWORD WINAPI DemandThread(LPVOID) {
         // start/stop). Forwarded verbatim; the tablet validates.
         if (g_ctrl->cmdSeq != lastCmdSeq) {
             lastCmdSeq = g_ctrl->cmdSeq;
-            char c[16]; memcpy(c, (const void*)g_ctrl->cmd, 15); c[15] = 0;
+            char c[12]; memcpy(c, (const void*)g_ctrl->cmd, 11); c[11] = 0;
             logts(); printf("[CMD] tray -> tablet: %s (%s)\n", c,
                 g_cmdSock != INVALID_SOCKET ? "sent" : "no tablet");
             if (g_cmdSock != INVALID_SOCKET) SendCommand(c);
